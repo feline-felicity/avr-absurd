@@ -36,7 +36,7 @@ Some bits were easy. **OCD+0x08[2] was single-stepping**. When this bit was set,
 
 Finding enable bits for breakpoints was somewhat harder. After experiments, it was found that **OCD+0x09[0:1] controlled individual breakpoints**, and **OCD+0x08[1] was the global enable bit** for both breakpoints. For a hardware breakpoint to be active, both bits had to be set.
 
-Unfortunately, I could not find what OCD+0x08[0] corresponded to. The constantly-set OCD+0x09[5] seems like to mean software breakpoint is active, which always is.
+The constantly-set OCD+0x09[5] seems like to mean software breakpoint is active, which always is.
 
 During these experiments, the read-only registers OCD+0x0C and +0x0D turned out to show what stopped the CPU. In addition to the causes corresponding to the previously described enable bits, there were two other bits: OCD+0x0C[7] for halt-on-reset and [6] for externally issued halt (via ASI_OCD_CTRLA). Somehow OCD+0x0D[0] was shared by BP0 and stepping. OCD+0x0C[2] was always asserted when any of other bits were set.
 
@@ -66,6 +66,11 @@ OCD+0x09[6] causes the CPU to halt right after a jump, which seems to be the "ch
 ### External Break
 OCD+0x09[4] seems to control the "External Break" feature described in the early version of TinyAVR 1-Series datasheet. This is a mechanism to halt all devices in a multi-MCU system. With this bit set, the CPU is halted while the EXTBRK input pin level is high. While which pin it is has never been documented, it turned out to be `PA6` for DB family. It can be on a different pin for other families, and it may be possible to remap it using an undocumented PORTMUX register, as is stated by the datasheet.
 
+### Instruction Injection
+With OCD+0x08[0] set, we can inject an instruction into the CPU. That is, we can force the CPU to execute an instruction given by the debugger, instead of letting it fetch one from the flash memory. To make this work, we have to set this bit, write the instruction to be executed to OCD+0x10, and do a single step. PC doesn't move as long as the injected instruction is not a branching one. The second word of two-word instructions (`lds`, `sts`, `call` and `jmp`) should be written to OCD+0x12. The injected instruction registers (OCD+0x10 to +0x13) are write-only, and seem to be reset once the instruction is executed.
+
+This feature is especially interesting on AVR, which can't run from RAM, in that it allows us to experiment with the CPU without programming the flash memory. Yet, I believe it is mainly intended to be used with software breakpoints. When we hit a software BP and continue without deleting it, the flash has to be programmed twice, first to restore the original instruction and do a single step, and then to plant the `break` instruction again. It's not practical to lose two erase/write cycles every time we just hit a BP, especially when some modern AVR families are specified for as few as 1K cycles. We can skip restoring the original instruction by injecting it, and thus re-planting `break`.
+
 ## Register Map
 ### OCD ASI Registers
 Use `stcs`/`ldcs` UPDI instructions to access these registers
@@ -80,23 +85,27 @@ Use `stcs`/`ldcs` UPDI instructions to access these registers
 Use `st(s)`/`ld(s)` UPDI instructions to access these registers. Both byte and word access allowed.  
 OCD base address is `0x0F80`. The names are of course not official.
 
-| Offset | Name   | 7     | 6   | 5    | 4      | 3   | 2       | 1    | 0        | Description   |
-| ------ | ------ | ----- | --- | ---- | ------ | --- | ------- | ---- | -------- | ------------- |
-| 0x00   | BP0A   | BP0AL | =   | =    | =      | =   | =       | =>   | 0        | Breakpoint 0  |
-| 0x01   | BP0A   | BP0AH | =   | =    | =      | =   | =       | =    | =>       |               |
-| 0x02   | BP0A   |       |     |      |        |     |         |      | BP0AT    | (MSb)         |
-| 0x04   | BP1A   | BP1AL | =   | =    | =      | =   | =       | =>   | 0        | Breakpoint 1  |
-| 0x05   | BP1A   | BP1AH | =   | =    | =      | =   | =       | =    | =>       |               |
-| 0x06   | BP1A   |       |     |      |        |     |         |      | BP1AT    | (MSb)         |
-| 0x08   | TRAPEN |       |     |      |        |     | STEP    | HWBP | PCHOLD?  | Trap Enable   |
-| 0x09   | TRAPEN | INT   | JMP | SWBP | EXTBRK |     |         | BP1  | BP0      |               |
-| 0x0C   | CAUSE  | RESET | EXT |      |        |     | STOPPED |      |          | Halt Cause    |
-| 0x0D   | CAUSE  | INT   | JMP | SWBP | EXTBRK |     |         | BP1  | BP0_STEP |               |
-| 0x14   | PC     | PCL   | =   | =    | =      | =   | =       | =    | =>       | Program Ctr   |
-| 0x15   | PC     | PCH   | =   | =    | =      | =   | =       | =    | =>       | word address  |
-| 0x18   | SP     | SPL   | =   | =    | =      | =   | =       | =    | =>       | Stack Ptr     |
-| 0x19   | SP     |       | SPH | =    | =      | =   | =       | =    | =>       |               |
-| 0x1C   | SREG   | I     | T   | H    | S      | Z   | N       | V    | C        | Status Reg    |
-| 0x20   | R0     | R0    | =   | =    | =      | =   | =       | =    | =>       | Register file |
-| ...    | ...    | ...   | ... | ...  | ...    | ... | ...     | ...  | ...      | ...           |
-| 0x3F   | R31/ZH | R31   | =   | =    | =      | =   | =       | =    | =>       | Register file |
+| Offset | Name   | 7      | 6   | 5    | 4      | 3   | 2       | 1    | 0        | Description          |
+| ------ | ------ | ------ | --- | ---- | ------ | --- | ------- | ---- | -------- | -------------------- |
+| 0x00   | BP0A   | BP0AL  | =   | =    | =      | =   | =       | =>   | 0        | Breakpoint 0         |
+| 0x01   | BP0A   | BP0AH  | =   | =    | =      | =   | =       | =    | =>       |                      |
+| 0x02   | BP0A   |        |     |      |        |     |         |      | BP0AT    | (MSb)                |
+| 0x04   | BP1A   | BP1AL  | =   | =    | =      | =   | =       | =>   | 0        | Breakpoint 1         |
+| 0x05   | BP1A   | BP1AH  | =   | =    | =      | =   | =       | =    | =>       |                      |
+| 0x06   | BP1A   |        |     |      |        |     |         |      | BP1AT    | (MSb)                |
+| 0x08   | CTRL   |        |     |      |        |     | STEP    | HWBP | INJECT   |                      |
+| 0x09   | CTRL   | INT    | JMP | SWBP | EXTBRK |     |         | BP1  | BP0      |                      |
+| 0x0C   | STATUS | RESET  | EXT |      |        |     | STOPPED |      |          |                      |
+| 0x0D   | STATUS | INT    | JMP | SWBP | EXTBRK |     |         | BP1  | BP0_STEP |                      |
+| 0x10   | INSN0  | INSN0L | =   | =    | =      | =   | =       | =    | =>       | Injected Instruction |
+| 0x11   | INSN0  | INSN0H | =   | =    | =      | =   | =       | =    | =>       | Word 0               |
+| 0x12   | INSN1  | INSN1L | =   | =    | =      | =   | =       | =    | =>       | Injected Instruction |
+| 0x13   | INSN1  | INSN1H | =   | =    | =      | =   | =       | =    | =>       | Word 1               |
+| 0x14   | PC     | PCL    | =   | =    | =      | =   | =       | =    | =>       | Program Counter      |
+| 0x15   | PC     | PCH    | =   | =    | =      | =   | =       | =    | =>       | (word address)       |
+| 0x18   | SP     | SPL    | =   | =    | =      | =   | =       | =    | =>       | Stack Pointer        |
+| 0x19   | SP     |        | SPH | =    | =      | =   | =       | =    | =>       |                      |
+| 0x1C   | SREG   | I      | T   | H    | S      | Z   | N       | V    | C        | Status Register      |
+| 0x20   | R0     | R0     | =   | =    | =      | =   | =       | =    | =>       | Register File        |
+| ...    | ...    | ...    | ... | ...  | ...    | ... | ...     | ...  | ...      | ...                  |
+| 0x3F   | R31/ZH | R31    | =   | =    | =      | =   | =       | =    | =>       | Register File        |
