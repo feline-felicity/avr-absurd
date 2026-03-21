@@ -358,42 +358,50 @@ class RspServer:
             # would be a good place to support strange things
             log.info(f"Monitor Command: {packet}")
             cmd = decode_hex_array(packet[6:]).decode(errors="ignore")
-            if cmd=="reset":
+            params = cmd.lower().split()
+            if params == ["reset"]:
                 log.info(f"Resetting MCU")
                 self.dbg.reset()
                 self.send_packet("OK")
-            elif cmd=="inttrap on":
+            elif params == ["inttrap", "on"]:
                 log.info(f"Enabling interrupt trap")
                 self.dbg.enable_traps(Traps.INT)
                 self.send_packet(b'Interrupt trap enabled\n'.hex())
-            elif cmd=="inttrap off":
+            elif params == ["inttrap", "off"]:
                 log.info(f"Disabling interrupt trap")
                 self.dbg.disable_traps(Traps.INT)
                 self.send_packet(b'Interrupt trap disabled\n'.hex())
-            elif cmd=="jmptrap on":
+            elif params == ["jmptrap", "on"]:
                 log.info(f"Enabling jump trap")
                 self.dbg.enable_traps(Traps.JMP)
                 self.send_packet(b'Jump trap enabled\n'.hex())
-            elif cmd=="jmptrap off":
+            elif params == ["jmptrap", "off"]:
                 log.info(f"Disabling jump trap")
                 self.dbg.disable_traps(Traps.JMP)
                 self.send_packet(b'Jump trap disabled\n'.hex())
-            elif cmd=="unk1 on":
-                log.info(f"Enabling UNKNOWN1")
-                self.dbg.enable_traps(Traps.UNKNOWN1)
-                self.send_packet(b'UNKNOWN1 enabled\n'.hex())
-            elif cmd=="unk1 off":
-                log.info(f"Disabling UNKNOWN1")
-                self.dbg.disable_traps(Traps.UNKNOWN1)
-                self.send_packet(b'UNKNOWN1 disabled\n'.hex())
-            elif cmd=="extbrk on":
+            elif params == ["extbrk", "on"]:
                 log.info(f"Enabling EXTBRK trap")
                 self.dbg.enable_traps(Traps.EXTBRK)
                 self.send_packet(b'EXTBRK trap enabled\n'.hex())
-            elif cmd=="extbrk off":
+            elif params == ["extbrk", "off"]:
                 log.info(f"Disabling EXTBRK trap")
                 self.dbg.disable_traps(Traps.EXTBRK)
                 self.send_packet(b'EXTBRK trap disabled\n'.hex())
+            elif params[0] == "exec":
+                # expects one or two 16-bit hex numbers.
+                if len(params) not in (2, 3):
+                    self.send_packet(b'Invalid arguments\n'.hex())
+                    return
+                try:
+                    insns = int(params[1], 16).to_bytes(2, byteorder="little")
+                    if len(params) == 3:
+                        insns += int(params[2], 16).to_bytes(2, byteorder="little")
+                except ValueError:
+                    self.send_packet(b'Invalid arguments\n'.hex())
+                    return
+                log.info(f"Executing instruction(s) {insns.hex(' ')}")
+                self.dbg.execute_instruction(insns)
+                self.send_packet(b'Instruction executed\n'.hex())
             else:
                 log.warn(f"Unrecognized monitor command")
                 self.send_packet("")

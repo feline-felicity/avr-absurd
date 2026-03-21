@@ -12,6 +12,8 @@ OCD_TRAPEN = OCD + 0x08
 OCD_TRAPENL = OCD + 0x08
 OCD_TRAPENH = OCD + 0x09
 OCD_CAUSE = OCD + 0x0C
+OCD_INSN0 = OCD + 0x10
+OCD_INSN1 = OCD + 0x12
 OCD_PC = OCD + 0x14
 OCD_SP = OCD + 0x18
 OCD_SREG = OCD + 0x1C
@@ -35,7 +37,7 @@ ASI_RSTREQ_RUN = 0x00
 ASI_SYS_SYSRST = 0x20
 
 class Traps(IntFlag):
-    UNKNOWN1 = 0x0001
+    INJECT = 0x0001
     HWBP = 0x0002
     STEP = 0x0004
     BP0 = 0x0100
@@ -189,7 +191,17 @@ class OcdRev1:
             return False
         self.updi.store_burst(start, data, data_width=WIDTH_BYTE, burst=len(data))
         return True
-    
+
+    def execute_instruction(self, instruction: bytes):
+        assert len(instruction) in (2, 4)
+        self.updi.store_direct(OCD_INSN0, instruction[0] | (instruction[1] << 8), data_width=WIDTH_WORD)
+        if len(instruction) == 4:
+            self.updi.store_direct(OCD_INSN1, instruction[2] | (instruction[3] << 8), data_width=WIDTH_WORD)
+        self.enable_traps(Traps.INJECT)
+        self.step()
+        self.disable_traps(Traps.INJECT)
+
+
     def dump_ocd(self):
         dump = self.updi.load_burst(OCD, burst=64)
         bp0 = dump[0] | (dump[1] << 8) | (dump[2] << 16)
@@ -203,9 +215,8 @@ class OcdRev1:
                    + ("0 " if trapen & Traps.BP0 else "_ ")
                    + ("P" if trapen & Traps.STEP else "_")
                    + ("H" if trapen & Traps.HWBP else "_")
-                   + ("?" if trapen & Traps.UNKNOWN1 else "_"))
+                   + ("I" if trapen & Traps.INJECT else "_"))
         cd = dump[12] | (dump[13] << 8)
-        # o1011 = dump[0x10] | (dump[0x11] << 8)
         pc = dump[0x14] | (dump[0x15] << 8)
         sp = dump[0x18] | (dump[0x19] << 8)
         sreg = dump[0x1c]
@@ -222,6 +233,5 @@ class OcdRev1:
         print(f"BP1:\t 0x{bp1>>1:04x} W (0x{bp1:05x} B)")
         print(f"TRAPEN:\t 0x{trapen:04x} ({trapstr})")
         print(f"REASON:\t 0x{cd:04x}")
-        # print(f"0x10:\t 0x{o1011:04x}")
         print(f"PC:\t 0x{pc-1:04x} W (0x{(pc-1)<<1:05x} B)\nSP:\t 0x{sp:04x}\nSREG:\t {sregstr}")
         print(f"Rn:\t {rf}\n")
