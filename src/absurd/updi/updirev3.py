@@ -96,7 +96,7 @@ class UpdiRev3:
         if len(buffer) != 3:
             log.error(f"'ldcs STATUSB' after Break timed out; could not connect to MCU (expected 3 bytes, got '{buffer.hex(' ')}')")
             raise UpdiException("ldcs", "`ldcs STATUSB` following a BREAK character failed")
-        log.info(f"UPDI resynchronized; error code: {buffer[2]:02x}")
+        log.warning(f"UPDI resynchronized; error code: {buffer[2]:02x}")
         # Set prescaler and resume full baudrate
         self.store_csr(0x09, self.updi_prescaler & 0x03)
         time.sleep(0.001)
@@ -111,7 +111,7 @@ class UpdiRev3:
         """
         n_tx = len(txdata) if skip_sync else len(txdata) + 1
         self.uart.reset_input_buffer()
-        log.info(f"Command: {txdata.hex(' ')} -> {n_expected} B")
+        log.debug(f"Command: {txdata.hex(' ')} -> {n_expected} B")
         if skip_sync:
             self.uart.write(txdata)
         else:
@@ -119,7 +119,6 @@ class UpdiRev3:
         self.uart.flush()
         
         echo = self.uart.read(n_tx)
-        # log.debug(f"command echo: {echo}")
         if len(echo) != n_tx:
             log.error(f"Instruction echo not received (expected {n_tx} byte(s), got '{echo.hex(' ')}')")
             return False, b"E"
@@ -128,11 +127,10 @@ class UpdiRev3:
             return True, bytes()
         
         buffer = self.uart.read(n_expected)
-        # log.debug(f"command return: {buffer}")
         if len(buffer) != n_expected:
             log.error(f"Expected response not received (expected {n_expected} byte(s), got '{buffer.hex(' ')}')")
             return False, b"R"
-        log.info(f"Response: {buffer.hex(' ')}")
+        log.debug(f"Response: {buffer.hex(' ')}")
         return True, buffer
     
 

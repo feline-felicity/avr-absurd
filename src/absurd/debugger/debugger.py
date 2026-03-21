@@ -1,4 +1,4 @@
-from enum import IntEnum, IntFlag
+from enum import IntFlag
 import time
 from typing import Optional
 from ..updi import WIDTH_BYTE, WIDTH_WORD, UpdiClient, UpdiException, KEY_OCD

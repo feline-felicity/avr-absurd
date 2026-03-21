@@ -1,8 +1,7 @@
 from ..debugger import OcdRev1, Traps
-import time
 import sys
 import socket
-from typing import List, Literal, NoReturn
+from typing import List
 from logging import getLogger
 log = getLogger(__name__)
 
@@ -27,7 +26,7 @@ MEMORYMAP = """
     <memory type="ram" start="0x800000" length="0x10000"/>
     <memory type="rom" start="0x0" length="0x20000"/>
 </memory-map>
-"""
+""".strip()
 
 def verify_checksum(payload: bytes, checksum: bytes) -> bool:
     try:
@@ -114,7 +113,7 @@ class RspServer:
                 pass
 
         self.client = client
-        log.info(f"Connected with {addr}")
+        log.info(f"Accepted connection from {addr}")
         client.setblocking(True)
         client.settimeout(0.1)
         try:
@@ -127,7 +126,7 @@ class RspServer:
                 packets = self.packparser.process_bytes(data)
 
                 if b'\x03' in data:
-                    log.info(f"Interrupted by GDB, halting CPU and sending SIGINT")
+                    log.debug(f"Interrupted by GDB, halting CPU and sending SIGINT")
                     client.sendall(b'+')
                     self.dbg.halt()
                     self.dbg.poll_halted()
@@ -174,10 +173,10 @@ class RspServer:
             # We have to poll MCU for halted CPU, but we also have to accept interrupt request from GDB, so we poll both alternatingly
             # This would help if PC was moved and pipeline was invalidated(?)
             self.dbg.run()
-            log.info(f"Resumed CPU; now polling for CPU Halt or Client Interrupt")
+            log.debug(f"Resumed CPU; now polling for CPU Halt or Client Interrupt")
             while True:
                 if self.dbg.is_halted():
-                    log.info(f"CPU halted, sending SIGTRAP")
+                    log.debug(f"CPU halted, sending SIGTRAP")
                     self.send_packet(SIGTRAP)
                     return
                 try:
@@ -186,7 +185,7 @@ class RspServer:
                     b = bytes()
                 # We assume we don't receive any packet here
                 if b'\x03' in b:
-                    log.info(f"Interrupted by GDB, halting CPU and sending SIGINT")
+                    log.debug(f"Interrupted by GDB, halting CPU and sending SIGINT")
                     self.client.sendall(b'+')
                     self.dbg.halt()
                     self.dbg.poll_halted()
@@ -207,7 +206,7 @@ class RspServer:
             pch = (pc >> 8) & 0xFF
             pcl = pc & 0xFF
             response = f"{gprs}{sreg:02x}{spl:02x}{sph:02x}{pcl:02x}{pch:02x}{pct:02x}00"
-            log.info(f"Register File: {response}")
+            log.debug(f"Register File: {response}")
             self.send_packet(response)
 
         elif packet.startswith("G"):
@@ -241,11 +240,11 @@ class RspServer:
             data = None
             if 0 <= addr < 0x200000:
                 data = self.dbg.read_code(addr, length)
-                log.info(f"Code at 0x{addr:05x} (0x{addr >> 1:04x} W): {data.hex(' ')}")
+                log.debug(f"Code at 0x{addr:05x} (0x{addr >> 1:04x} W): {data.hex(' ')}")
 
             elif 0x800000 <= addr < 0x810000:
                 data = self.dbg.read_data(addr - 0x800000, length)
-                log.info(f"Data at 0x{addr - 0x800000:04x}: {data.hex(' ')}")
+                log.debug(f"Data at 0x{addr - 0x800000:04x}: {data.hex(' ')}")
             
             if data:
                 self.send_packet(data.hex())
@@ -274,7 +273,7 @@ class RspServer:
                 self.send_packet(ERR_ADDROUTOFRANGE)
 
             if self.dbg.write_data(addr-0x800000, data):
-                log.info(f"Data at 0x{addr - 0x800000:04x}: {data.hex(' ')}")
+                log.debug(f"Data at 0x{addr - 0x800000:04x}: {data.hex(' ')}")
                 self.send_packet("OK")
             else:
                 log.error(f"Data write failed")
@@ -293,12 +292,12 @@ class RspServer:
             
             if self.bps[0] < 0:
                 self.bps[0] = addr
-                log.info(f"Setting BP0 to 0x{addr:05x} (0x{addr >> 1:04x} W)")
+                log.debug(f"Setting BP0 to 0x{addr:05x} (0x{addr >> 1:04x} W)")
                 self.dbg.set_bp(0, addr >> 1)
                 self.send_packet("OK")
             elif self.bps[1] < 0:
                 self.bps[1] = addr
-                log.info(f"Setting BP1 to 0x{addr:05x} (0x{addr >> 1:04x} W)")
+                log.debug(f"Setting BP1 to 0x{addr:05x} (0x{addr >> 1:04x} W)")
                 self.dbg.set_bp(1, addr >> 1)
                 self.send_packet("OK")
             else:
@@ -318,12 +317,12 @@ class RspServer:
             
             if self.bps[0] == addr:
                 self.bps[0] = -1
-                log.info(f"Clearing BP0 at 0x{addr:05x}")
+                log.debug(f"Clearing BP0 at 0x{addr:05x}")
                 self.dbg.clear_bp(0)
                 self.send_packet("OK")
             elif self.bps[1] == addr:
                 self.bps[1] = -1
-                log.info(f"Clearing BP1 at 0x{addr:05x}")
+                log.debug(f"Clearing BP1 at 0x{addr:05x}")
                 self.dbg.clear_bp(1)
                 self.send_packet("OK")
             else:
@@ -336,11 +335,11 @@ class RspServer:
             self.send_packet(ERR_GENERAL)
 
         elif packet.startswith("vAttach"):
-            log.info(f"Responding to vAttach with fake SIGTRAP")
+            log.debug(f"Responding to vAttach with fake SIGTRAP")
             self.send_packet(SIGTRAP)
 
         elif packet.startswith("qXfer:memory-map:read"):
-            log.info(f"qXfer:memory-map:read::")
+            log.debug(f"qXfer:memory-map:read::")
             try:
                 offset, length = packet[23:].split(",")
                 offset = int(offset, 16)
@@ -356,7 +355,7 @@ class RspServer:
 
         elif packet.startswith("qRcmd"):
             # would be a good place to support strange things
-            log.info(f"Monitor Command: {packet}")
+            log.debug(f"Monitor Command: {packet}")
             cmd = decode_hex_array(packet[6:]).decode(errors="ignore")
             params = cmd.lower().split()
             if params == ["reset"]:
@@ -403,37 +402,61 @@ class RspServer:
                 self.dbg.execute_instruction(insns)
                 self.send_packet(b'Instruction executed\n'.hex())
             else:
-                log.warn(f"Unrecognized monitor command")
+                log.warning(f"Unrecognized monitor command: {cmd}")
                 self.send_packet("")
 
         elif packet.startswith("k"):
-            log.info(f"Ignoring k command...")
+            log.debug(f"Ignoring k command...")
 
         elif packet.startswith("vKill"):
-            log.info(f"Responding to vKill with fake OK...")
+            log.debug(f"Responding to vKill with fake OK...")
             self.send_packet("OK")
-            log.info(f"Detaching")
-            raise StopIteration() # TODO: stop abuse of StopIteration
+            sys.exit(0)
 
         elif packet.startswith("vRun"):
-            log.info(f"Resetting MCU upon vRun request")
+            log.debug(f"Resetting MCU upon vRun request")
             self.dbg.reset()
             self.send_packet(SIGTRAP)
 
+        elif packet.startswith("vMustReplyEmpty"):
+            log.debug(f"Responding to vMustReplyEmpty with empty packet")
+            self.send_packet("")
+
+        elif packet.startswith("vCont?"):
+            log.debug(f"Ignoring vCont? for now")
+            # TODO: self.send_packet("vCont;s;c;r") after implementing vCont
+            self.send_packet("")
+
         elif packet.startswith("R") or packet.startswith("r"):
-            log.info(f"Resetting MCU upon R/r request")
+            log.debug(f"Resetting MCU upon R/r request")
             self.dbg.reset()  
 
         elif packet.startswith("T") or packet.startswith("H"):
-            log.info(f"Responding to thread-related command with fake OK...")
+            log.debug(f"Responding to thread-related command with fake OK...")
             self.send_packet("OK")
 
+        elif packet.startswith("qfThreadInfo"):
+            log.debug(f"Responding to qfThreadInfo with fake thread list...")
+            self.send_packet("m1")
+
+        elif packet.startswith("qsThreadInfo"):
+            log.debug(f"Responding to qsThreadInfo with empty list...")
+            self.send_packet("l")
+
+        elif packet.startswith("qC"):
+            log.debug(f"Responding to qC with fake thread ID...")
+            self.send_packet("QC1")
+
+        elif packet.startswith("qAttached"):
+            log.debug(f"Responding to qAttached with 1 (attached)")
+            self.send_packet("1")
+
         elif packet.startswith("D"):
-            log.info(f"Detaching")
-            raise StopIteration() # TODO: stop abuse of StopIteration
+            log.debug(f"Detaching")
+            sys.exit(0)
 
         else:
-            log.warn(f"Unknown Command: {packet}")
+            log.warning(f"Unknown Command: {packet}")
             self.send_packet("")
     
 

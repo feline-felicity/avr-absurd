@@ -1,16 +1,16 @@
 from argparse import ArgumentParser
 import sys
-from logging import INFO, WARNING, Filter, getLogger, StreamHandler, Formatter, DEBUG
+from logging import INFO, Filter, getLogger, StreamHandler, Formatter, DEBUG
 import time
 import serial
 from .debugger import OcdRev1
 from .rspserver import RspServer
-from .updi import UpdiRev1, UpdiRev3, UpdiException, WIDTH_BYTE, WIDTH_3BYTE, WIDTH_WORD, KEY_OCD, KEY_NVMPROG
+from .updi import UpdiRev1, UpdiRev3, UpdiException, KEY_NVMPROG
 from .deviceinfo import get_deviceinfo
 
 log = getLogger()
 handler = StreamHandler(sys.stderr)
-handler.setLevel(WARNING)
+handler.setLevel(INFO)
 handler.setFormatter(Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 handler.addFilter(Filter("absurd.rspserver.rspserver"))
 log.setLevel(DEBUG)
@@ -72,33 +72,33 @@ def main():
 
     except serial.SerialException:
         print(f"Error while interacting with serial port `{args.port}`", file=sys.stderr)
-        exit(1)
+        sys.exit(1)
     except UpdiException as ex:
         print(f"UPDI instruction `{ex.instruction}` failed", file=sys.stderr)
         uc.resynchronize()
         uc.disconnect()
-        exit(1)
+        sys.exit(1)
     
     # main loop
     updic = UpdiRev3(args.port, args.bps, updi_prescaler=0)
     try:
         dbg = OcdRev1(updic, flash_offset=devinfo.flash_offset)
         sv = RspServer(args.rsp_port, dbg)
-        print("Starting RSP server...")
+        log.info("Starting RSP server...")
         sv.serve()
     
     except UpdiException as ex:
-        print(f"UPDI instruction `{ex.instruction}` failed", file=sys.stderr)
+        log.error(f"UPDI instruction `{ex.instruction}` failed")
         updic.disconnect()
-        exit(1)
-    except StopIteration:
-        print(f"Normal termination", file=sys.stderr)
+        sys.exit(1)
+    except SystemExit:
+        log.info(f"Normal termination")
         updic.disconnect()
-        exit(0)
+        raise
     except KeyboardInterrupt:
-        print(f"Terminated by Ctrl-C", file=sys.stderr)
+        log.info(f"Terminated by Ctrl-C")
         updic.disconnect()
-        exit(0)
+        sys.exit(0)
 
 if __name__=="__main__":
     main()
