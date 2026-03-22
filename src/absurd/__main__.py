@@ -3,7 +3,7 @@ import sys
 from logging import INFO, Filter, getLogger, StreamHandler, Formatter, DEBUG
 import time
 import serial
-from .debugger import OcdRev1
+from .debugger import Ocd
 from .rspserver import RspServer
 from .updi import UpdiRev1, UpdiRev3, UpdiException, KEY_NVMPROG
 from .deviceinfo import get_deviceinfo
@@ -82,7 +82,7 @@ def main():
     # main loop
     updic = UpdiRev3(args.port, args.bps, updi_prescaler=0)
     try:
-        dbg = OcdRev1(updic, flash_offset=devinfo.flash_offset, use_byte_pc=(ocdver == "0"))
+        dbg = Ocd(updic, flash_offset=devinfo.flash_offset, use_byte_pc=(ocdver == "0"))
         sv = RspServer(args.rsp_port, dbg)
         log.info("Starting RSP server...")
         sv.serve()

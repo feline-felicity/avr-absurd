@@ -1,4 +1,4 @@
-from ..debugger import OcdRev1, Traps
+from ..debugger import Ocd
 import sys
 import socket
 from typing import List
@@ -88,7 +88,7 @@ class GdbPacketParser:
 
 
 class RspServer:
-    def __init__(self, tcpport: int, debugger: OcdRev1) -> None:
+    def __init__(self, tcpport: int, debugger: Ocd) -> None:
         sv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sv.bind(("", tcpport))
         sv.listen()
@@ -99,9 +99,7 @@ class RspServer:
     
     def serve(self) -> None:
         log.debug(f"Starting server; attaching to MCU and halting CPU")
-        self.dbg.attach()
-        self.dbg.halt()
-        self.dbg.set_traps(Traps.SWBP | Traps.HWBP)
+        self.dbg.start_session()
 
         # timeout has to be set for Windows build to accept KeyboardInterrupt
         self.socket.settimeout(0.1)
@@ -128,8 +126,7 @@ class RspServer:
                 if b'\x03' in data:
                     log.debug(f"Interrupted by GDB, halting CPU and sending SIGINT")
                     client.sendall(b'+')
-                    self.dbg.halt()
-                    self.dbg.poll_halted()
+                    self.dbg.halt_and_wait()
                     self.send_packet(SIGINT)
 
                 for p in packets:
@@ -137,7 +134,7 @@ class RspServer:
                     self.handle_packet(p)
                 
         finally:
-            self.dbg.detach()
+            self.dbg.stop_session()
             client.close()
             self.socket.close()
     
@@ -187,8 +184,7 @@ class RspServer:
                 if b'\x03' in b:
                     log.debug(f"Interrupted by GDB, halting CPU and sending SIGINT")
                     self.client.sendall(b'+')
-                    self.dbg.halt()
-                    self.dbg.poll_halted()
+                    self.dbg.halt_and_wait()
                     self.send_packet(SIGINT)
                     return
 
@@ -364,27 +360,27 @@ class RspServer:
                 self.send_packet("OK")
             elif params == ["inttrap", "on"]:
                 log.info(f"Enabling interrupt trap")
-                self.dbg.enable_traps(Traps.INT)
+                self.dbg.set_break_on_interrupt(True)
                 self.send_packet(b'Interrupt trap enabled\n'.hex())
             elif params == ["inttrap", "off"]:
                 log.info(f"Disabling interrupt trap")
-                self.dbg.disable_traps(Traps.INT)
+                self.dbg.set_break_on_interrupt(False)
                 self.send_packet(b'Interrupt trap disabled\n'.hex())
             elif params == ["jmptrap", "on"]:
                 log.info(f"Enabling jump trap")
-                self.dbg.enable_traps(Traps.JMP)
+                self.dbg.set_break_on_jump(True)
                 self.send_packet(b'Jump trap enabled\n'.hex())
             elif params == ["jmptrap", "off"]:
                 log.info(f"Disabling jump trap")
-                self.dbg.disable_traps(Traps.JMP)
+                self.dbg.set_break_on_jump(False)
                 self.send_packet(b'Jump trap disabled\n'.hex())
             elif params == ["extbrk", "on"]:
                 log.info(f"Enabling EXTBRK trap")
-                self.dbg.enable_traps(Traps.EXTBRK)
+                self.dbg.set_external_break(True)
                 self.send_packet(b'EXTBRK trap enabled\n'.hex())
             elif params == ["extbrk", "off"]:
                 log.info(f"Disabling EXTBRK trap")
-                self.dbg.disable_traps(Traps.EXTBRK)
+                self.dbg.set_external_break(False)
                 self.send_packet(b'EXTBRK trap disabled\n'.hex())
             elif params[0] == "exec":
                 # expects one or two 16-bit hex numbers.

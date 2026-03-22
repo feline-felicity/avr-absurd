@@ -47,7 +47,7 @@ class Traps(IntFlag):
     JMP = 0x4000
     INT = 0x8000
 
-class OcdRev1:
+class Ocd:
     def __init__(self, updi: UpdiClient, flash_offset: int, use_byte_pc: bool) -> None:
         self.updi = updi
         self.flash_offset = flash_offset
@@ -66,9 +66,21 @@ class OcdRev1:
     
     def detach(self):
         self.updi.disconnect()
+
+    def start_session(self):
+        self.attach()
+        self.halt()
+        self._set_traps(Traps.SWBP | Traps.HWBP)
+
+    def stop_session(self):
+        self.detach()
     
     def halt(self):
         self.updi.store_csr(ASI_OCD_CTRLA, ASI_OCD_STOP)
+
+    def halt_and_wait(self, interval: float = 0, count: Optional[int] = None):
+        self.halt()
+        return self.poll_halted(interval=interval, count=count)
 
     def run(self):
         self.updi.store_csr(ASI_OCD_CTRLA, ASI_OCD_RUN)
@@ -95,22 +107,40 @@ class OcdRev1:
         # For better compatibility with older devices
         time.sleep(0.1)
 
-    def set_traps(self, traps: Traps):
+    def _set_traps(self, traps: Traps):
         self.updi.store_direct(OCD_TRAPEN, traps, data_width=DataWidth.WORD)
 
-    def enable_traps(self, traps: Traps):
+    def _enable_traps(self, traps: Traps):
         current = self.updi.load_direct(OCD_TRAPEN, data_width=DataWidth.WORD)
         self.updi.store_direct(OCD_TRAPEN, traps | current, data_width=DataWidth.WORD)
 
-    def disable_traps(self, traps: Traps):
+    def _disable_traps(self, traps: Traps):
         current = self.updi.load_direct(OCD_TRAPEN, data_width=DataWidth.WORD)
         self.updi.store_direct(OCD_TRAPEN, current & ~traps, data_width=DataWidth.WORD)
+
+    def set_break_on_interrupt(self, enabled: bool):
+        if enabled:
+            self._enable_traps(Traps.INT)
+        else:
+            self._disable_traps(Traps.INT)
+
+    def set_break_on_jump(self, enabled: bool):
+        if enabled:
+            self._enable_traps(Traps.JMP)
+        else:
+            self._disable_traps(Traps.JMP)
+
+    def set_external_break(self, enabled: bool):
+        if enabled:
+            self._enable_traps(Traps.EXTBRK)
+        else:
+            self._disable_traps(Traps.EXTBRK)
     
     def set_bp(self, bpid: int, wordaddr: int):
         byteaddr = (wordaddr << 1) & 0xFFFF
         topbit = wordaddr >> 15
         origregval = self.updi.load_direct(OCD_TRAPENH)
-        self.enable_traps(Traps.HWBP)
+        self._enable_traps(Traps.HWBP)
         # OCD v0 devices use the LSb as "Enable" bit. As this bit is not implemented on v1, we can make this function work on both versions by always setting it.
         if bpid == 0:
             self.updi.store_direct(OCD_BP0A, byteaddr | 0x01, data_width=DataWidth.WORD)
