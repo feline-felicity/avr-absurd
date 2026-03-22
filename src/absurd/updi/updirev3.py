@@ -1,4 +1,6 @@
 import time
+from dataclasses import dataclass
+from enum import IntEnum
 from typing import Tuple, Literal
 from logging import getLogger
 log = getLogger(__name__)
@@ -9,17 +11,81 @@ class UpdiException(Exception):
         super().__init__(*args)
         self.instruction = instruction
 
-class UpdiRev3:
+
+class UnsupportedUpdiFeatureError(UpdiException):
+    pass
+
+
+class AddressWidth(IntEnum):
+    BYTE = 0
+    WORD = 1
+    THREE_BYTE = 2
+
+
+class DataWidth(IntEnum):
+    BYTE = 0
+    WORD = 1
+
+
+class AddressStep(IntEnum):
+    NO_CHANGE = 0
+    INCREMENT = 1
+    DECREMENT = 3
+
+
+@dataclass(frozen=True)
+class UpdiFeatures:
+    supported_address_widths: tuple[AddressWidth, ...] = (AddressWidth.BYTE, AddressWidth.WORD, AddressWidth.THREE_BYTE)
+    supports_post_decrement: bool = True
+
+
+UPDI_REV1_FEATURES = UpdiFeatures(
+    supported_address_widths=(AddressWidth.BYTE, AddressWidth.WORD),
+    supports_post_decrement=False,
+)
+UPDI_REV2_FEATURES = UpdiFeatures(
+    supported_address_widths=(AddressWidth.BYTE, AddressWidth.WORD, AddressWidth.THREE_BYTE),
+    supports_post_decrement=False,
+)
+UPDI_REV3_FEATURES = UpdiFeatures(
+    supported_address_widths=(AddressWidth.BYTE, AddressWidth.WORD, AddressWidth.THREE_BYTE),
+    supports_post_decrement=True,
+)
+UPDI_REV4_FEATURES = UPDI_REV2_FEATURES
+
+
+class UpdiClient:
     """
-    UPDI client as specified in AVR EA's datasheet (revision 3)
+    UPDI client parameterized by a capability descriptor.
     """
 
-    def __init__(self, serialport:str, baudrate:int, updi_prescaler=0):
+    def __init__(self, serialport:str, baudrate:int, updi_prescaler=0, features: UpdiFeatures | None = None):
         self.uart = serial.Serial(baudrate=115200, parity=serial.PARITY_EVEN, stopbits=serial.STOPBITS_TWO, timeout=1.0)
         self.uart.port = serialport
         self.uart.dtr = False
         self.baudrate = baudrate
         self.updi_prescaler = updi_prescaler
+        self.features = features or UPDI_REV3_FEATURES
+        self.default_address_width = max(self.features.supported_address_widths)
+
+    def _resolve_address_width(self, addr: int, addr_width: AddressWidth | None, instruction: str) -> AddressWidth:
+        resolved = self.default_address_width if addr_width is None else addr_width
+        if resolved not in self.features.supported_address_widths:
+            raise UnsupportedUpdiFeatureError(instruction, f"Address width {resolved} is not supported by this UPDI client")
+        if not ((resolved == AddressWidth.BYTE and 0 <= addr <= 0xFF)
+                or (resolved == AddressWidth.WORD and 0 <= addr <= 0xFFFF)
+                or (resolved == AddressWidth.THREE_BYTE and 0 <= addr <= 0xFFFFFF)):
+            raise ValueError(f"Address 0x{addr:x} does not fit in width {resolved}")
+        return resolved
+
+    def _check_pointer_step(self, addr_step: AddressStep | int, instruction: str) -> AddressStep:
+        try:
+            resolved = AddressStep(addr_step)
+        except ValueError as exc:
+            raise ValueError(f"Address step {addr_step!r} is not supported") from exc
+        if resolved == AddressStep.DECREMENT and not self.features.supports_post_decrement:
+            raise UnsupportedUpdiFeatureError(instruction, "Post-decrement addressing is not supported by this UPDI client")
+        return resolved
     
     def connect(self) -> int:
         """
@@ -156,14 +222,12 @@ class UpdiRev3:
             raise UpdiException("stcs")
         
     
-    def read_sib(self, size: Literal[0b00, 0b01, 0b10] = 2) -> bytes:
+    def read_sib(self) -> bytes:
         """
-        `key.sib width` instruction (opcode 0xE_)  
-        width: 0=8 B; 1=16 B; 2=32 B  
-        * width=2 is undocumented, but is used by official debuggers, and in fact 32 B is sent even if width=1
+        `key.sib width` instruction (opcode 0xE_)
+        Width fixed to `2` (32 bytes), which is undocumented. In fact, 32 bytes are sent even if width is set to 1.
         """
-        assert 0 <= size <= 3
-        succ, val = self.command(bytes((0xE4 | size,)), n_expected=32)
+        succ, val = self.command(bytes((0xE6,)), n_expected=32)
         if not succ:
             raise UpdiException("sib")
         return val 
@@ -183,134 +247,138 @@ class UpdiRev3:
     def repeat(self, count: int):
         """
         `repeat count` instruction. (opcode 0xA0)
-        * count can be byte or word, but it is limited to 255, so the word-width variant is not so meaningful
+        * count can be 8 or 16 bits long, but it is limited to 256. There seems to be no practical reason to use 16-bit count.
+        * While datasheet ambiguously states `up to 255 repeats`, 256 repeats (i.e. count=255) seems to be accepted by actual hardware.
         """
-        assert 1<=count<=0x100
+        assert 1 <= count <= 256
         succ, val = self.command(bytes((0xA0, count-1)))
         if not succ:
             raise UpdiException("repeat")
         
-    
-    def load_direct(self, addr: int, addr_width: Literal[0, 1, 2] = 2, data_width: Literal[0, 1] = 0) -> int:
+    def load_direct(self, addr: int, addr_width: AddressWidth | None = None, data_width: DataWidth = DataWidth.BYTE) -> int:
         """
         `lds addr` instruction. (opcode 0x0_)
-        addr_width: address width (0=B; 1=W; 2=3B)  
-        data_width: data width (0=B; 1=W)  
+        addr_width: address width
+        data_width: data width
         * prefixing with `repeat` is supported by hardware, but omitted from this library
         """
-        assert (addr_width==0 and 0<=addr<=0xFF) or (addr_width==1 and 0<=addr<=0xFFFF) or (addr_width==2 and 0<=addr<=0xFFFFFF)
-        assert 0 <= data_width <= 1
-        if addr_width==0:
+        resolved_addr_width = self._resolve_address_width(addr, addr_width, "lds")
+        if resolved_addr_width == AddressWidth.BYTE:
             succ, val = self.command(bytes((0x00 | data_width, addr)), n_expected=data_width + 1)
-        elif addr_width==1:
+        elif resolved_addr_width == AddressWidth.WORD:
             succ, val = self.command(bytes((0x04 | data_width, addr & 0xFF, addr >> 8)), n_expected=data_width + 1)
         else:
             succ, val = self.command(bytes((0x08 | data_width, addr & 0xFF, (addr >> 8) & 0xFF, addr >> 16)), n_expected=data_width + 1)
 
-        if succ and data_width==0:
-            return val[0] 
+        if succ and data_width == DataWidth.BYTE:
+            return val[0]
         elif succ:
-            return (val[1] << 8) | val[0]  
+            return (val[1] << 8) | val[0]
         else:
             log.error("lds instruction failed")
             raise UpdiException("lds")
-        
+
     
-    def store_direct(self, addr:int, data:int, addr_width:Literal[0,1,2]=2, data_width:Literal[0,1]=0) -> None:
+    def store_direct(self, addr:int, data:int, addr_width:AddressWidth | None = None, data_width:DataWidth = DataWidth.BYTE) -> None:
         """
         `sts addr, val` instruction. (opcode 0x4_)
-        addr_width: address width (0=B; 1=W; 2=3B)  
-        data_width: data width (0=B; 1=W)  
+        addr_width: address width
+        data_width: data width
         * prefixing with `repeat` is supported by hardware, but omitted from this library
         """
-        assert (addr_width==0 and 0<=addr<=0xFF) or (addr_width==1 and 0<=addr<=0xFFFF) or (addr_width==2 and 0<=addr<=0xFFFFFF)
-        assert (data_width==0 and 0<=data<=0xFF) or (data_width==1 and 0<=data<=0xFFFF)
+        assert (data_width == DataWidth.BYTE and 0 <= data <= 0xFF) or (data_width == DataWidth.WORD and 0 <= data <= 0xFFFF)
+        resolved_addr_width = self._resolve_address_width(addr, addr_width, "sts")
 
-        if addr_width==0:
+        if resolved_addr_width == AddressWidth.BYTE:
             succ, val = self.command(bytes((0x40 | data_width, addr)), n_expected=1)
-        elif addr_width==1:
+        elif resolved_addr_width == AddressWidth.WORD:
             succ, val = self.command(bytes((0x44 | data_width, addr & 0xFF, addr >> 8)), n_expected=1)
         else:
             succ, val = self.command(bytes((0x48 | data_width, addr & 0xFF, (addr >> 8) & 0xFF, addr >> 16)), n_expected=1)
-        if not succ or val[0]!=0x40:
+        if not succ or val[0] != 0x40:
             log.error(f"sts instruction failed at addressing stage: {val}")
             raise UpdiException("sts", "`sts` instruction did not receive ACK in address stage")
 
-        databytes = bytes((data,)) if data_width==0 else bytes((data & 0xFF, data >> 8))
+        databytes = bytes((data,)) if data_width == DataWidth.BYTE else bytes((data & 0xFF, data >> 8))
         succ, val = self.command(databytes, n_expected=1, skip_sync=True)
-        if not succ or val[0]!=0x40:
+        if not succ or val[0] != 0x40:
             log.error(f"sts instruction failed at data stage: {val}")
             raise UpdiException("sts", "`sts` instruction did not receive ACK in data stage")
 
 
-    def load_pointer(self, addr_width:Literal[0,1,2]=2) -> int:
+    def load_pointer(self, addr_width:AddressWidth | None = None) -> int:
         """
         `ld ptr` instruction (opcode 0x2_)
         reads the pointer for indirect access by `ld`/`st` instructions.
-        addr_width: address width (0=B; 1=W; 2=3B)
+        addr_width: address width
         """
-        succ, val = self.command(bytes((0x28 | addr_width,)), n_expected=1 + addr_width)
+        resolved_addr_width = self.default_address_width if addr_width is None else addr_width
+        if resolved_addr_width not in self.features.supported_address_widths:
+            raise UnsupportedUpdiFeatureError("ld", f"Address width {resolved_addr_width} is not supported by this UPDI client")
+        succ, val = self.command(bytes((0x28 | resolved_addr_width,)), n_expected=resolved_addr_width + 1)
         if not succ:
             raise UpdiException("ld", "`ld ptr`")
         
-        if addr_width == 0:
+        if resolved_addr_width == AddressWidth.BYTE:
             return val[0]
-        elif addr_width == 1:
+        elif resolved_addr_width == AddressWidth.WORD:
             return val[0] | (val[1] << 8)
         else:
             return val[0] | (val[1] << 8) | (val[2] << 16)
         
         
-    def store_pointer(self, addr:int, addr_width:Literal[0,1,2]=2) -> None:
+    def store_pointer(self, addr:int, addr_width:AddressWidth | None = None) -> None:
         """
         `st ptr` instruction (opcode 0x6_)
         sets the pointer for indirect access by `ld`/`st` instructions.
-        addr_width: address width (0=B; 1=W; 2=3B)
+        addr_width: address width
         """
-        assert (addr_width==0 and 0<=addr<=0xFF) or (addr_width==1 and 0<=addr<=0xFFFF) or (addr_width==2 and 0<=addr<=0xFFFFFF)
+        resolved_addr_width = self._resolve_address_width(addr, addr_width, "st")
 
-        if addr_width==0:
+        if resolved_addr_width == AddressWidth.BYTE:
             succ, val = self.command(bytes((0x68, addr)), n_expected=1)
-        elif addr_width==1:
+        elif resolved_addr_width == AddressWidth.WORD:
             succ, val = self.command(bytes((0x69, addr & 0xFF, addr >> 8)), n_expected=1)
         else:
-            succ, val = self.command(bytes((0x6A, addr & 0xFF, (addr >> 8) & 0xFF, addr >> 16)), n_expected=1)
+            succ, val = self.command(bytes((0x68 | resolved_addr_width, addr & 0xFF, (addr >> 8) & 0xFF, addr >> 16)), n_expected=1)
         if not succ or val[0]!=0x40:
             log.error(f"st ptr instruction failed: {val}")
             raise UpdiException("st", "`st ptr`")
         
     
-    def load_indirect(self, data_width:Literal[0,1]=0, addr_step:Literal[0,1,3]=1, burst=1) -> bytes:
+    def load_indirect(self, data_width:DataWidth = DataWidth.BYTE, addr_step:AddressStep | int = AddressStep.INCREMENT, burst=1) -> bytes:
         """
         `ld *ptr` instruction (opcode 0x2_)
         loads data at the address pointed by the pointer.
-        data_width: (0=B; 1=W)
-        addr_step: (0=No change, 1=post-increment, 3=post-decrement)
+        data_width: (byte or word)
+        addr_step: addressing mode (`AddressStep.NO_CHANGE`, `AddressStep.INCREMENT`, `AddressStep.DECREMENT`)
         burst: number of bytes/words stored in burst (must match the operand of preceding `repeat` instruction)
         return: bytes for both `data_width`s (low byte first to match memory layout)
         """
-        succ, val = self.command(bytes((0x20 | (addr_step << 2) | data_width,)), n_expected=burst * (data_width + 1))
+        resolved_addr_step = self._check_pointer_step(addr_step, "ld")
+        succ, val = self.command(bytes((0x20 | (resolved_addr_step << 2) | data_width,)), n_expected=burst * (data_width + 1))
         if not succ:
             raise UpdiException("ld", f"`ld` expected {burst} {['byte','word'][data_width]}(s)")
         return val 
 
-    def store_indirect(self, data: bytes, data_width:Literal[0,1]=0, addr_step:Literal[0,1,3]=1, burst=1) -> None:
+    def store_indirect(self, data: bytes, data_width:DataWidth = DataWidth.BYTE, addr_step:AddressStep | int = AddressStep.INCREMENT, burst=1) -> None:
         """
         `st *ptr` instruction (opcode 0x6_)
         stores `data` at the address pointed by the pointer.
-        data_width: (0=B; 1=W)
-        addr_step: (0=No change, 1=post-increment, 3=post-decrement)
+        data_width: (byte or word)
+        addr_step: addressing mode (`AddressStep.NO_CHANGE`, `AddressStep.INCREMENT`, `AddressStep.DECREMENT`)
         burst: number of bytes/words stored in burst (must match the operand of preceding `repeat` instruction)
         """
-        assert len(data) >= (burst if data_width == 0 else 2 * burst)
+        assert len(data) == (burst if data_width == DataWidth.BYTE else 2 * burst)
         assert 1 <= burst <= 0xFF
-        succ, val = self.command(bytes((0x60 | (addr_step << 2) | data_width,)))
+        resolved_addr_step = self._check_pointer_step(addr_step, "st")
+        succ, val = self.command(bytes((0x60 | (resolved_addr_step << 2) | data_width,)))
         if not succ:
             log.error(f"st *ptr instruction failed in instruction stage: {val}")
             raise UpdiException("st", f"`st` did not receive own echo in instruction stage")
 
         for i in range(burst):
-            if data_width == 0:
+            if data_width == DataWidth.BYTE:
                 succ, val = self.command(bytes((data[i],)), n_expected=1, skip_sync=True)
             else:
                 succ, val = self.command(bytes((data[2 * i], data[2 * i + 1])), n_expected=1, skip_sync=True)
@@ -319,18 +387,31 @@ class UpdiRev3:
                 log.error(f"st *ptr instruction failed in data stage: {val}")
                 raise UpdiException("st", f"`st` did not receive enough bytes in data stage")
 
-    def load_burst(self, addr: int, data_width: Literal[0, 1] = 0, burst=1) -> bytes:
+    def load_burst(self, addr: int, data_width: DataWidth = DataWidth.BYTE, burst=1) -> bytes:
         """
         burst indirect load using successive `st ptr`, `repeat` and `ld *ptr++` instructions.
         """
         self.store_pointer(addr)
         self.repeat(burst)
-        return self.load_indirect(data_width=data_width, addr_step=1, burst=burst)
+        return self.load_indirect(data_width=data_width, addr_step=AddressStep.INCREMENT, burst=burst)
     
-    def store_burst(self, addr: int, data: bytes, data_width: Literal[0, 1] = 0, burst=1) -> None:
+    def store_burst(self, addr: int, data: bytes, data_width: DataWidth = DataWidth.BYTE) -> None:
         """
         burst indirect store using successive `st ptr`, `repeat` and `st *ptr++` instructions.
         """
+        if data_width == DataWidth.BYTE:
+            burst = len(data)
+        else:
+            burst = len(data) // 2
         self.store_pointer(addr)
         self.repeat(burst)
-        self.store_indirect(data, data_width=data_width, addr_step=1, burst=burst)
+        self.store_indirect(data, data_width=data_width, addr_step=AddressStep.INCREMENT, burst=burst)
+
+
+class UpdiRev3(UpdiClient):
+    """
+    Compatibility wrapper for the revision-3 feature set.
+    """
+
+    def __init__(self, serialport:str, baudrate:int, updi_prescaler=0):
+        super().__init__(serialport, baudrate, updi_prescaler=updi_prescaler, features=UPDI_REV3_FEATURES)

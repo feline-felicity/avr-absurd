@@ -1,16 +1,20 @@
-from .updirev3 import UpdiRev3, UpdiException
-from .updicompat import UpdiRev1, UpdiRev2
-
-UpdiClient = UpdiRev1 | UpdiRev2 | UpdiRev3
+from .updirev3 import (
+	AddressStep,
+	AddressWidth,
+	DataWidth,
+	UPDI_REV1_FEATURES,
+	UPDI_REV2_FEATURES,
+	UPDI_REV3_FEATURES,
+	UPDI_REV4_FEATURES,
+	UnsupportedUpdiFeatureError,
+	UpdiClient,
+	UpdiException,
+	UpdiFeatures,
+	UpdiRev3,
+)
+from .updicompat import UpdiRev1, UpdiRev2, UpdiRev4
 
 KEY_NVMPROG = b'NVMProg '
 KEY_NVMERASE = b'NVMErase'
 KEY_NVMUSERROW = b'NVMUs&te'
 KEY_OCD = b'OCD     '
-WIDTH_BYTE = 0
-WIDTH_WORD = 1
-WIDTH_3BYTE = 2
-PTR_NOCHANGE = 0
-PTR_INCREMENT = 1
-PTR_DIRECT = 2
-PTR_DECREMENT = 3

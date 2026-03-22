@@ -1,7 +1,7 @@
 from enum import IntFlag
 import time
 from typing import Optional
-from ..updi import WIDTH_BYTE, WIDTH_WORD, UpdiClient, UpdiException, KEY_OCD
+from ..updi import DataWidth, UpdiClient, UpdiException, KEY_OCD
 
 OCD = 0x0F80
 OCD_BP0A = OCD + 0x00
@@ -96,15 +96,15 @@ class OcdRev1:
         time.sleep(0.1)
 
     def set_traps(self, traps: Traps):
-        self.updi.store_direct(OCD_TRAPEN, traps, data_width=WIDTH_WORD)
+        self.updi.store_direct(OCD_TRAPEN, traps, data_width=DataWidth.WORD)
 
     def enable_traps(self, traps: Traps):
-        current = self.updi.load_direct(OCD_TRAPEN, data_width=WIDTH_WORD)
-        self.updi.store_direct(OCD_TRAPEN, traps | current, data_width=WIDTH_WORD)
+        current = self.updi.load_direct(OCD_TRAPEN, data_width=DataWidth.WORD)
+        self.updi.store_direct(OCD_TRAPEN, traps | current, data_width=DataWidth.WORD)
 
     def disable_traps(self, traps: Traps):
-        current = self.updi.load_direct(OCD_TRAPEN, data_width=WIDTH_WORD)
-        self.updi.store_direct(OCD_TRAPEN, current & ~traps, data_width=WIDTH_WORD)
+        current = self.updi.load_direct(OCD_TRAPEN, data_width=DataWidth.WORD)
+        self.updi.store_direct(OCD_TRAPEN, current & ~traps, data_width=DataWidth.WORD)
     
     def set_bp(self, bpid: int, wordaddr: int):
         byteaddr = (wordaddr << 1) & 0xFFFF
@@ -113,11 +113,11 @@ class OcdRev1:
         self.enable_traps(Traps.HWBP)
         # OCD v0 devices use the LSb as "Enable" bit. As this bit is not implemented on v1, we can make this function work on both versions by always setting it.
         if bpid == 0:
-            self.updi.store_direct(OCD_BP0A, byteaddr | 0x01, data_width=WIDTH_WORD)
+            self.updi.store_direct(OCD_BP0A, byteaddr | 0x01, data_width=DataWidth.WORD)
             self.updi.store_direct(OCD_BP0AT, topbit)
             self.updi.store_direct(OCD_TRAPENH, origregval | 0x1)
         elif bpid == 1:
-            self.updi.store_direct(OCD + 0x4, byteaddr | 0x01, data_width=WIDTH_WORD)
+            self.updi.store_direct(OCD + 0x4, byteaddr | 0x01, data_width=DataWidth.WORD)
             self.updi.store_direct(OCD + 0x6, topbit)
             self.updi.store_direct(OCD_TRAPENH, origregval | 0x2)
 
@@ -125,33 +125,33 @@ class OcdRev1:
         origregval = self.updi.load_direct(OCD_TRAPENH)
         if bpid == 0:
             self.updi.store_direct(OCD_TRAPENH, origregval & ~0x1)
-            self.updi.store_direct(OCD_BP0A, 0, data_width=WIDTH_WORD)
+            self.updi.store_direct(OCD_BP0A, 0, data_width=DataWidth.WORD)
             self.updi.store_direct(OCD_BP0AT, 0)
         elif bpid == 1:
             self.updi.store_direct(OCD_TRAPENH, origregval & ~0x2)
-            self.updi.store_direct(OCD + 0x4, 0, data_width=WIDTH_WORD)
+            self.updi.store_direct(OCD + 0x4, 0, data_width=DataWidth.WORD)
             self.updi.store_direct(OCD + 0x6, 0)
 
     def get_pc(self):
         if self.use_byte_pc:
-            return self.updi.load_direct(OCD_PC, data_width=WIDTH_WORD) // 2 - 1
+            return self.updi.load_direct(OCD_PC, data_width=DataWidth.WORD) // 2 - 1
         else:
-            return self.updi.load_direct(OCD_PC, data_width=WIDTH_WORD) - 1
+            return self.updi.load_direct(OCD_PC, data_width=DataWidth.WORD) - 1
     
     def set_pc(self, pc: int):
         if self.use_byte_pc:
             pc *= 2
         # not pc+1; the instruction at the newly set PC is not executed
         # Thus, we have to set PC to pc+1-1...
-        self.updi.store_direct(OCD_PC, pc & 0xFFFF, data_width=WIDTH_WORD)
+        self.updi.store_direct(OCD_PC, pc & 0xFFFF, data_width=DataWidth.WORD)
         # ...and do one step to complete that empty cycle, possibly related to instruction fetch
         self.step()
 
     def get_sp(self):
-        return self.updi.load_direct(OCD_SP, data_width=WIDTH_WORD)
+        return self.updi.load_direct(OCD_SP, data_width=DataWidth.WORD)
     
     def set_sp(self, sp: int):
-        self.updi.store_direct(OCD_SP, sp, data_width=WIDTH_WORD)
+        self.updi.store_direct(OCD_SP, sp, data_width=DataWidth.WORD)
     
     def get_sreg(self):
         return self.updi.load_direct(OCD_SREG)
@@ -172,7 +172,7 @@ class OcdRev1:
     
     def set_register_file(self, data:bytes):
         assert len(data)==32
-        return self.updi.store_burst(OCD_R0, data, burst=32)
+        return self.updi.store_burst(OCD_R0, data)
 
     def step(self):
         origregval = self.updi.load_direct(OCD_TRAPENL)
@@ -196,14 +196,14 @@ class OcdRev1:
     def write_data(self, start: int, data: bytes):
         if start < 0 or 0x10000 <= start or len(data) == 0 or len(data) > 256:
             return False
-        self.updi.store_burst(start, data, data_width=WIDTH_BYTE, burst=len(data))
+        self.updi.store_burst(start, data, data_width=DataWidth.BYTE)
         return True
 
     def execute_instruction(self, instruction: bytes):
         assert len(instruction) in (2, 4)
-        self.updi.store_direct(OCD_INSN0, instruction[0] | (instruction[1] << 8), data_width=WIDTH_WORD)
+        self.updi.store_direct(OCD_INSN0, instruction[0] | (instruction[1] << 8), data_width=DataWidth.WORD)
         if len(instruction) == 4:
-            self.updi.store_direct(OCD_INSN1, instruction[2] | (instruction[3] << 8), data_width=WIDTH_WORD)
+            self.updi.store_direct(OCD_INSN1, instruction[2] | (instruction[3] << 8), data_width=DataWidth.WORD)
         self.step()
 
 
