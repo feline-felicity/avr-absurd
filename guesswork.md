@@ -71,6 +71,12 @@ With OCD+0x08[0] set, we can inject an instruction into the CPU. That is, we can
 
 This feature is especially interesting on AVR, which can't run from RAM, in that it allows us to experiment with the CPU without programming the flash memory. Yet, I believe it is mainly intended to be used with software breakpoints. When we hit a software BP and continue without deleting it, the flash has to be programmed twice, first to restore the original instruction and do a single step, and then to plant the `break` instruction again. It's not practical to lose two erase/write cycles every time we just hit a BP, especially when some modern AVR families are specified for as few as 1K cycles. We can skip restoring the original instruction by injecting it, and thus re-planting `break`.
 
+### OCD v0 discrepancies
+TinyAVR 0-series and 1-series, the first two families of AVR8X, report in the SIB that their OCD is version 0. There are some differences in the register map of OCD.
+- BP0/1-specific enable bits are not at OCD+0x09[0:1]. They are instead at OCD+0x00[0] and +0x04[0], i.e., the LSb of breakpoint address registers
+- BP0 and 1 also share the halt reason bit at OCD+0x0D[0], along with stepping.
+- PC is given in byte address in OCD+0x14.
+
 ## Register Map
 ### OCD ASI Registers
 Use `stcs`/`ldcs` UPDI instructions to access these registers
@@ -109,3 +115,18 @@ OCD base address is `0x0F80`. The names are of course not official.
 | 0x20   | R0     | R0     | =   | =    | =      | =   | =       | =    | =>       | Register File        |
 | ...    | ...    | ...    | ... | ...  | ...    | ... | ...     | ...  | ...      | ...                  |
 | 0x3F   | R31/ZH | R31    | =   | =    | =      | =   | =       | =    | =>       | Register File        |
+
+OCD v0 differences
+
+| Offset | Name   | 7     | 6   | 5    | 4      | 3   | 2       | 1    | 0       | Description     |
+| ------ | ------ | ----- | --- | ---- | ------ | --- | ------- | ---- | ------- | --------------- |
+| 0x00   | BP0A   | BP0AL | =   | =    | =      | =   | =       | =>   | BP0EN   | Breakpoint 0    |
+| 0x01   | BP0A   | BP0AH | =   | =    | =      | =   | =       | =    | =>      |                 |
+| 0x04   | BP1A   | BP1AL | =   | =    | =      | =   | =       | =>   | BP1EN   | Breakpoint 1    |
+| 0x05   | BP1A   | BP1AH | =   | =    | =      | =   | =       | =    | =>      |                 |
+| 0x08   | CTRL   |       |     |      |        |     | STEP    | HWBP | INJECT  |                 |
+| 0x09   | CTRL   | INT   | JMP | SWBP | EXTBRK |     |         |      |         |                 |
+| 0x0C   | STATUS | RESET | EXT |      |        |     | STOPPED |      |         |                 |
+| 0x0D   | STATUS | INT   | JMP | SWBP | EXTBRK |     |         |      | BP_STEP |                 |
+| 0x14   | PC     | PCL   | =   | =    | =      | =   | =       | =    | =>      | Program Counter |
+| 0x15   | PC     | PCH   | =   | =    | =      | =   | =       | =    | =>      | (byte address)  |
