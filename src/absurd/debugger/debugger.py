@@ -48,9 +48,10 @@ class Traps(IntFlag):
     INT = 0x8000
 
 class OcdRev1:
-    def __init__(self, updi: UpdiClient, flash_offset: int) -> None:
+    def __init__(self, updi: UpdiClient, flash_offset: int, use_byte_pc: bool) -> None:
         self.updi = updi
         self.flash_offset = flash_offset
+        self.use_byte_pc = use_byte_pc
     
     def attach(self):
         try:
@@ -110,12 +111,13 @@ class OcdRev1:
         topbit = wordaddr >> 15
         origregval = self.updi.load_direct(OCD_TRAPENH)
         self.enable_traps(Traps.HWBP)
+        # OCD v0 devices use the LSb as "Enable" bit. As this bit is not implemented on v1, we can make this function work on both versions by always setting it.
         if bpid == 0:
-            self.updi.store_direct(OCD_BP0A, byteaddr, data_width=WIDTH_WORD)
+            self.updi.store_direct(OCD_BP0A, byteaddr | 0x01, data_width=WIDTH_WORD)
             self.updi.store_direct(OCD_BP0AT, topbit)
             self.updi.store_direct(OCD_TRAPENH, origregval | 0x1)
         elif bpid == 1:
-            self.updi.store_direct(OCD + 0x4, byteaddr, data_width=WIDTH_WORD)
+            self.updi.store_direct(OCD + 0x4, byteaddr | 0x01, data_width=WIDTH_WORD)
             self.updi.store_direct(OCD + 0x6, topbit)
             self.updi.store_direct(OCD_TRAPENH, origregval | 0x2)
 
@@ -131,9 +133,14 @@ class OcdRev1:
             self.updi.store_direct(OCD + 0x6, 0)
 
     def get_pc(self):
-        return self.updi.load_direct(OCD_PC, data_width=WIDTH_WORD)-1
+        if self.use_byte_pc:
+            return self.updi.load_direct(OCD_PC, data_width=WIDTH_WORD) // 2 - 1
+        else:
+            return self.updi.load_direct(OCD_PC, data_width=WIDTH_WORD) - 1
     
     def set_pc(self, pc: int):
+        if self.use_byte_pc:
+            pc *= 2
         # not pc+1; the instruction at the newly set PC is not executed
         # Thus, we have to set PC to pc+1-1...
         self.updi.store_direct(OCD_PC, pc & 0xFFFF, data_width=WIDTH_WORD)

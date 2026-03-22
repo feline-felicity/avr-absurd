@@ -82,7 +82,7 @@ def main():
     # main loop
     updic = UpdiRev3(args.port, args.bps, updi_prescaler=0)
     try:
-        dbg = OcdRev1(updic, flash_offset=devinfo.flash_offset)
+        dbg = OcdRev1(updic, flash_offset=devinfo.flash_offset, use_byte_pc=(ocdver == "0"))
         sv = RspServer(args.rsp_port, dbg)
         log.info("Starting RSP server...")
         sv.serve()
