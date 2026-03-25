@@ -6,4 +6,5 @@ from .nvmdrivers import (
     NvmDriverP4,
     NvmDriverP5,
     NvmDriverP6,
+    create_nvm_driver,
 )

@@ -193,3 +193,18 @@ class NvmDriverP6(NvmDriverP2):
     CMD_FLWR = 0x02
     CMD_FLPER = 0x08
     SIGROW = 0x1080
+
+
+def create_nvm_driver(nvm_version: str, updi: UpdiClient, flash_offset: int) -> NvmDriver:
+    driver_types = {
+        "0": NvmDriverP0,
+        "2": NvmDriverP2,
+        "3": NvmDriverP3,
+        "4": NvmDriverP4,
+        "5": NvmDriverP5,
+        "6": NvmDriverP6,
+    }
+    try:
+        return driver_types[nvm_version](updi, flash_offset)
+    except KeyError as exc:
+        raise ValueError(f"Unsupported NVM version: {nvm_version}") from exc

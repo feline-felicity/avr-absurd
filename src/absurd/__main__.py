@@ -4,8 +4,9 @@ from logging import INFO, Filter, getLogger, StreamHandler, Formatter, DEBUG
 import time
 import serial
 from .debugger import Ocd
+from .nvmdrivers import create_nvm_driver
 from .rspserver import RspServer
-from .updi import UpdiRev1, UpdiRev3, UpdiException, KEY_NVMPROG
+from .updi import AddressWidth, UpdiClient, UpdiException, UpdiFeatures, UpdiRev1, KEY_NVMPROG
 from .deviceinfo import get_deviceinfo
 
 log = getLogger()
@@ -15,6 +16,16 @@ handler.setFormatter(Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 handler.addFilter(Filter("absurd.rspserver.rspserver"))
 log.setLevel(DEBUG)
 log.addHandler(handler)
+
+
+def get_updi_features(nvm_version: str) -> UpdiFeatures:
+    supported_widths = (AddressWidth.BYTE, AddressWidth.WORD)
+    if nvm_version != "0":
+        supported_widths += (AddressWidth.THREE_BYTE,)
+    return UpdiFeatures(
+        supported_address_widths=supported_widths,
+        supports_post_decrement=False,
+    )
 
 
 def main():
@@ -80,10 +91,13 @@ def main():
         sys.exit(1)
     
     # main loop
-    updic = UpdiRev3(args.port, args.bps, updi_prescaler=0)
+    updi_features = get_updi_features(nvmver)
+    updic = UpdiClient(args.port, args.bps, updi_prescaler=0, features=updi_features)
     try:
+        nvm_driver = create_nvm_driver(nvmver, updic, devinfo.flash_offset)
         dbg = Ocd(updic, flash_offset=devinfo.flash_offset, use_byte_pc=(ocdver == "0"))
         sv = RspServer(args.rsp_port, dbg)
+        log.info(f"Selected NVM driver for SIB NVM version {nvmver}")
         log.info("Starting RSP server...")
         sv.serve()
     
