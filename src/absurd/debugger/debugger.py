@@ -37,7 +37,7 @@ ASI_RSTREQ_RUN = 0x00
 ASI_SYS_SYSRST = 0x20
 
 class Traps(IntFlag):
-    INJECT = 0x0001
+    PCHOLD = 0x0001
     HWBP = 0x0002
     STEP = 0x0004
     BP0 = 0x0100
@@ -204,9 +204,7 @@ class OcdRev1:
         self.updi.store_direct(OCD_INSN0, instruction[0] | (instruction[1] << 8), data_width=WIDTH_WORD)
         if len(instruction) == 4:
             self.updi.store_direct(OCD_INSN1, instruction[2] | (instruction[3] << 8), data_width=WIDTH_WORD)
-        self.enable_traps(Traps.INJECT)
         self.step()
-        self.disable_traps(Traps.INJECT)
 
 
     def dump_ocd(self):
@@ -222,7 +220,7 @@ class OcdRev1:
                    + ("0 " if trapen & Traps.BP0 else "_ ")
                    + ("P" if trapen & Traps.STEP else "_")
                    + ("H" if trapen & Traps.HWBP else "_")
-                   + ("I" if trapen & Traps.INJECT else "_"))
+                   + ("P" if trapen & Traps.PCHOLD else "_"))
         cd = dump[12] | (dump[13] << 8)
         pc = dump[0x14] | (dump[0x15] << 8)
         sp = dump[0x18] | (dump[0x19] << 8)
