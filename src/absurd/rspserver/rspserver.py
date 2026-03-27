@@ -198,7 +198,7 @@ class RspServer:
             pc = self.dbg.get_pc() << 1
             sph = sp >> 8
             spl = sp & 0xFF
-            pct = pc >> 16
+            pct = (pc >> 16) & 0xFF
             pch = (pc >> 8) & 0xFF
             pcl = pc & 0xFF
             response = f"{gprs}{sreg:02x}{spl:02x}{sph:02x}{pcl:02x}{pch:02x}{pct:02x}00"

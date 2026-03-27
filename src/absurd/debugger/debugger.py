@@ -216,7 +216,13 @@ class Ocd:
             return bytes()
         length = min(length, 256)
         return self.updi.load_burst(start + self.flash_offset, burst=length)
-    
+
+    def write_code(self, start: int, data: bytes):
+        if start < 0 or 0x200000 <= start or len(data) == 0 or len(data) > 256:
+            return False
+        self.updi.store_burst(start + self.flash_offset, data, data_width=DataWidth.BYTE)
+        return True
+
     def read_data(self, start:int, length:int) -> bytes:
         if start < 0 or 0x10000 <= start or length <= 0:
             return bytes()
