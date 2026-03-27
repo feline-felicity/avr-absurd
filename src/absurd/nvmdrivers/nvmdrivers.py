@@ -24,8 +24,16 @@ class NvmDriver(ABC):
         pass
 
     @abstractmethod
-    def read_page(self, byteaddr: int) -> tuple[int, bytes]:
+    def read_page(self, byteaddr: int) -> bytes:
         pass
+
+    @abstractmethod
+    def get_page_size(self) -> int:
+        pass
+
+    def get_page_base_addr(self, byteaddr: int) -> int:
+        ps = self.get_page_size()
+        return byteaddr - (byteaddr % ps)
 
 
 class NvmDriverP0(NvmDriver):
@@ -55,7 +63,7 @@ class NvmDriverP0(NvmDriver):
     def read_signature(self) -> bytes:
         return self.updi.load_burst(self.SIGROW, burst=3, data_width=DataWidth.BYTE)
 
-    def _get_page_size(self):
+    def get_page_size(self):
         if self.page_size is not None:
             return self.page_size
         # On P:0 devices, the page size is 64 bytes for devices with <=16KB flash, and 128 bytes for devices with >16KB flash.
@@ -71,7 +79,7 @@ class NvmDriverP0(NvmDriver):
         self._poll_idle()
 
     def program_page(self, byteaddr: int, data: bytes):
-        ps = self._get_page_size()
+        ps = self.get_page_size()
         if len(data) > ps:
             raise ValueError("Data length exceeds page size")
         if byteaddr % ps != 0:
@@ -82,11 +90,11 @@ class NvmDriverP0(NvmDriver):
         self.updi.store_direct(self.CTRLA, self.CMD_WP)
         self._poll_idle()
 
-    def read_page(self, byteaddr: int) -> tuple[int, bytes]:
-        ps = self._get_page_size()
-        aligned_addr = byteaddr - (byteaddr % ps)
-        data = self.updi.load_burst(self._flash_addr(aligned_addr), burst=ps)
-        return aligned_addr, data
+    def read_page(self, byteaddr: int) -> bytes:
+        ps = self.get_page_size()
+        if byteaddr % self.get_page_size() != 0:
+            raise ValueError("Byte address must be aligned to page size")
+        return self.updi.load_burst(self._flash_addr(byteaddr), burst=ps)
 
 
 class NvmDriverP3(NvmDriverP0):
@@ -100,7 +108,7 @@ class NvmDriverP3(NvmDriverP0):
     CMD_PBC = 0x0F  # FLPBCLR
     SIGROW = 0x1100
 
-    def _get_page_size(self):
+    def get_page_size(self):
         if self.page_size is not None:
             return self.page_size
         # For P:3, somehow the border lies between 32KB and 64KB, i.e. 0x95 and 0x96.
@@ -114,7 +122,7 @@ class NvmDriverP5(NvmDriverP3):
     # SIGROW is slightly pushed up by BOOTROW.
     SIGROW = 0x1080
 
-    def _get_page_size(self):
+    def get_page_size(self):
         # So far, P:5 devices have the smaller page size.
         return 64
 
@@ -130,7 +138,6 @@ class NvmDriverP2(NvmDriver):
     CMD_FLWR = 0x02
     CMD_FLPER = 0x08
     SIGROW = 0x1100
-    PAGE_SIZE = 512
 
     def __init__(self, updi: UpdiClient, flash_offset: int):
         super().__init__(updi, flash_offset)
@@ -153,9 +160,9 @@ class NvmDriverP2(NvmDriver):
         self._poll_idle()
 
     def program_page(self, byteaddr: int, data: bytes):
-        if len(data) > self.PAGE_SIZE:
+        if len(data) > self.get_page_size():
             raise ValueError("Data length exceeds page size")
-        if byteaddr % self.PAGE_SIZE != 0:
+        if byteaddr % self.get_page_size() != 0:
             raise ValueError("Byte address must be aligned to page size")
         self._poll_idle()
         self.updi.store_direct(self.CTRLA, self.CMD_FLWR)
@@ -164,11 +171,16 @@ class NvmDriverP2(NvmDriver):
             self.updi.store_burst(self._flash_addr(byteaddr + 256), data[256:])
         self._poll_idle()
 
-    def read_page(self, byteaddr: int) -> tuple[int, bytes]:
-        aligned_addr = byteaddr - (byteaddr % self.PAGE_SIZE)
-        # Use word burst to cover a 512 byte page. So far, all byte-granularity NVMs have been using 512 byte pages.
-        data = self.updi.load_burst(self._flash_addr(aligned_addr), burst=self.PAGE_SIZE // 2, data_width=DataWidth.WORD)
-        return aligned_addr, data
+    def read_page(self, byteaddr: int) -> bytes:
+        ps = self.get_page_size()
+        if byteaddr % ps != 0:
+            raise ValueError("Byte address must be aligned to page size")
+        # Use word burst to cover a 512 byte page.
+        return self.updi.load_burst(self._flash_addr(byteaddr), burst=ps // 2, data_width=DataWidth.WORD)
+
+    def get_page_size(self):
+        # So far, all byte-granularity NVMs have been using 512 byte pages.
+        return 512
 
 
 class NvmDriverP4(NvmDriverP2):
