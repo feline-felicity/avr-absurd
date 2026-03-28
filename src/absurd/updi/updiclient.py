@@ -1,7 +1,7 @@
 import time
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Tuple, Literal
+from typing import Tuple
 from logging import getLogger
 log = getLogger(__name__)
 import serial
@@ -39,20 +39,14 @@ class UpdiFeatures:
     supports_post_decrement: bool = True
 
 
-UPDI_REV1_FEATURES = UpdiFeatures(
+UPDI_BASE_FEATURES = UpdiFeatures(
     supported_address_widths=(AddressWidth.BYTE, AddressWidth.WORD),
     supports_post_decrement=False,
 )
-UPDI_REV2_FEATURES = UpdiFeatures(
-    supported_address_widths=(AddressWidth.BYTE, AddressWidth.WORD, AddressWidth.THREE_BYTE),
-    supports_post_decrement=False,
-)
-UPDI_REV3_FEATURES = UpdiFeatures(
+UPDI_DEFAULT_FEATURES = UpdiFeatures(
     supported_address_widths=(AddressWidth.BYTE, AddressWidth.WORD, AddressWidth.THREE_BYTE),
     supports_post_decrement=True,
 )
-UPDI_REV4_FEATURES = UPDI_REV2_FEATURES
-
 
 class UpdiClient:
     """
@@ -65,7 +59,7 @@ class UpdiClient:
         self.uart.dtr = False
         self.baudrate = baudrate
         self.updi_prescaler = updi_prescaler
-        self.features = features or UPDI_REV3_FEATURES
+        self.features = features or UPDI_DEFAULT_FEATURES
         self.default_address_width = max(self.features.supported_address_widths)
 
     def _resolve_address_width(self, addr: int, addr_width: AddressWidth | None, instruction: str) -> AddressWidth:
@@ -414,4 +408,4 @@ class UpdiRev3(UpdiClient):
     """
 
     def __init__(self, serialport:str, baudrate:int, updi_prescaler=0):
-        super().__init__(serialport, baudrate, updi_prescaler=updi_prescaler, features=UPDI_REV3_FEATURES)
+        super().__init__(serialport, baudrate, updi_prescaler=updi_prescaler, features=UPDI_DEFAULT_FEATURES)

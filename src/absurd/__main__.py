@@ -6,7 +6,7 @@ import serial
 from .debugger import Ocd
 from .nvmdrivers import create_nvm_driver
 from .rspserver import RspServer
-from .updi import AddressWidth, UpdiClient, UpdiException, UpdiFeatures, UpdiRev1, KEY_NVMPROG
+from .updi import AddressWidth, UpdiClient, UpdiException, UpdiFeatures, KEY_NVMPROG, UPDI_BASE_FEATURES
 
 
 class MultiFilter(Filter):
@@ -90,7 +90,7 @@ def main():
         handler.setLevel(DEBUG)
 
     # As serial port error can happen at any moment, it is never caught by Updi client
-    uc = UpdiRev1(args.port, args.bps)
+    uc = UpdiClient(args.port, args.bps, features=UPDI_BASE_FEATURES)
     try:
         # Identify the chip and determine UPDI, NVM & OCD versions
         try:
