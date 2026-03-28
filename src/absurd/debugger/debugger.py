@@ -147,11 +147,11 @@ class Ocd:
             self.updi.store_direct(OCD_BP0AT, topbit)
             self.updi.store_direct(OCD_TRAPENH, origregval | 0x1)
         elif bpid == 1:
-            self.updi.store_direct(OCD + 0x4, byteaddr | 0x01, data_width=DataWidth.WORD)
-            self.updi.store_direct(OCD + 0x6, topbit)
+            self.updi.store_direct(OCD_BP1A, byteaddr | 0x01, data_width=DataWidth.WORD)
+            self.updi.store_direct(OCD_BP1AT, topbit)
             self.updi.store_direct(OCD_TRAPENH, origregval | 0x2)
 
-    def clear_bp(self, bpid: int):
+    def clear_bp(self, bpid: int | None = None):
         origregval = self.updi.load_direct(OCD_TRAPENH)
         if bpid == 0:
             self.updi.store_direct(OCD_TRAPENH, origregval & ~0x1)
@@ -159,8 +159,14 @@ class Ocd:
             self.updi.store_direct(OCD_BP0AT, 0)
         elif bpid == 1:
             self.updi.store_direct(OCD_TRAPENH, origregval & ~0x2)
-            self.updi.store_direct(OCD + 0x4, 0, data_width=DataWidth.WORD)
-            self.updi.store_direct(OCD + 0x6, 0)
+            self.updi.store_direct(OCD_BP1A, 0, data_width=DataWidth.WORD)
+            self.updi.store_direct(OCD_BP1AT, 0)
+        else:
+            self.updi.store_direct(OCD_TRAPENH, origregval & ~0x3)
+            self.updi.store_direct(OCD_BP0A, 0, data_width=DataWidth.WORD)
+            self.updi.store_direct(OCD_BP0AT, 0)
+            self.updi.store_direct(OCD_BP1A, 0, data_width=DataWidth.WORD)
+            self.updi.store_direct(OCD_BP1AT, 0)
 
     def get_pc(self):
         if self.use_byte_pc:

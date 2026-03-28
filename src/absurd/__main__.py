@@ -96,7 +96,7 @@ def main():
     try:
         nvm_driver = create_nvm_driver(nvmver, updic, devinfo.flash_offset)
         dbg = Ocd(updic, flash_offset=devinfo.flash_offset, use_byte_pc=(ocdver == "0"))
-        sv = RspServer(args.rsp_port, dbg)
+        sv = RspServer(args.rsp_port, dbg, nvm_driver)
         log.info(f"Selected NVM driver for SIB NVM version {nvmver}")
         log.info("Starting RSP server...")
         sv.serve()

@@ -1,4 +1,6 @@
 from ..debugger import Ocd
+from .breakpoint import BreakpointManager
+from ..nvmdrivers import NvmDriver
 import sys
 import socket
 from typing import List, Literal
@@ -152,10 +154,11 @@ class RspInterface:
 
 
 class RspServer:
-    def __init__(self, tcpport: int, debugger: Ocd) -> None:
+    def __init__(self, tcpport: int, debugger: Ocd, nvmdriver: NvmDriver) -> None:
         self.dbg = debugger
         self.bps: List[int] = [-1, -1]
         self.tcpport = tcpport
+        self.nvmdriver = nvmdriver
 
     def serve(self) -> None:
         log.debug(f"Starting server; attaching to MCU and halting CPU")
@@ -163,6 +166,8 @@ class RspServer:
 
         rspitf = RspInterface(self.tcpport)
         rspitf.accept()
+
+        bpman = BreakpointManager(self.nvmdriver, self.dbg, allow_swbp=False)
 
         try:
             while True:
@@ -172,12 +177,13 @@ class RspServer:
                     self.dbg.halt_and_wait()
                     rspitf.send(SIGINT)
                 else:
-                    self._handle_packet(packet, rspitf)  # type: ignore (receive() never returns None in non-timeout mode)
+                    self._handle_packet(packet, rspitf, bpman)  # type: ignore (receive() never returns None in non-timeout mode)
         finally:
+            bpman.cleanup()
             self.dbg.stop_session()
             rspitf.close()
 
-    def _handle_packet(self, packet: str, rspitf: RspInterface) -> None:
+    def _handle_packet(self, packet: str, rspitf: RspInterface, bpman: BreakpointManager) -> None:
         log.debug(f"Received Command: {packet}")
 
         if packet.startswith("qSupported"):
@@ -199,15 +205,21 @@ class RspServer:
 
         elif packet.startswith("s"):
             # TODO: implement "step from..."
-            # step should halt the CPU immediately
-            log.debug(f"Stepping")
-            self.dbg.step()
+            # No need to commit breakpoints, but we have to inject the original instruction if we're on a SWBP
+            originsn = bpman.get_original_instruction(self.dbg.get_pc() << 1)
+            if originsn is not None:
+                log.debug(f"Stepping with active SWBP; injecting original instruction {originsn:04x}")
+                self.dbg.execute_instruction(originsn.to_bytes(2, byteorder="little"))
+            else:
+                log.debug(f"Stepping normally")
+                self.dbg.step()
             rspitf.send(SIGTRAP)
 
         elif packet.startswith("c"):
             # TODO: implement "continue from..."
+            # Commit breakpoints before resuming CPU
+            bpman.commit()
             # We have to poll MCU for halted CPU, but we also have to accept interrupt request from GDB, so we poll both alternatingly
-            # This would help if PC was moved and pipeline was invalidated(?)
             self.dbg.run()
             log.debug(f"Resumed CPU; now polling for CPU Halt or Client Interrupt")
             while True:
@@ -307,10 +319,9 @@ class RspServer:
             else:
                 log.error(f"Data write failed")
                 rspitf.send(ERR_INVALIDARGS)
-        # TODO: temporarily fake SWBP
+
         elif packet.startswith("Z1") or packet.startswith("Z0"):
-            # Set hardware BP
-            log.debug(f"Responding to HWBP set request (Z1)")
+            # GDB can't choose between HW and SW breakpoints in a useful way, so we won't distinguish them and use our own logic to assign them.
             cmd = packet[3:].split(",")[0]
             try:
                 addr = int(cmd, 16)
@@ -318,24 +329,17 @@ class RspServer:
                 log.error(f"Could not parse command")
                 rspitf.send(ERR_INVALIDARGS)
                 return
-
-            if self.bps[0] < 0:
-                self.bps[0] = addr
-                log.debug(f"Setting BP0 to 0x{addr:05x} (0x{addr >> 1:04x} W)")
-                self.dbg.set_bp(0, addr >> 1)
-                rspitf.send("OK")
-            elif self.bps[1] < 0:
-                self.bps[1] = addr
-                log.debug(f"Setting BP1 to 0x{addr:05x} (0x{addr >> 1:04x} W)")
-                self.dbg.set_bp(1, addr >> 1)
+            
+            r = bpman.add_breakpoint(addr)
+            if r:
+                log.debug(f"Registered BP at 0x{addr:05x} (0x{addr >> 1:04x} W)")
                 rspitf.send("OK")
             else:
-                log.error(f"No free HW BPs")
+                log.error(f"Failed to register BP at 0x{addr:05x}")
                 rspitf.send(ERR_OUTOFHWBP)
 
         elif packet.startswith("z1") or packet.startswith("z0"):
             # Clear hardware BP
-            log.debug(f"Responding to HWBP clear request (z1)")
             cmd = packet[3:].split(",")[0]
             try:
                 addr = int(cmd, 16)
@@ -343,24 +347,9 @@ class RspServer:
                 log.error(f"Could not parse command")
                 rspitf.send(ERR_INVALIDARGS)
                 return
-
-            if self.bps[0] == addr:
-                self.bps[0] = -1
-                log.debug(f"Clearing BP0 at 0x{addr:05x}")
-                self.dbg.clear_bp(0)
-                rspitf.send("OK")
-            elif self.bps[1] == addr:
-                self.bps[1] = -1
-                log.debug(f"Clearing BP1 at 0x{addr:05x}")
-                self.dbg.clear_bp(1)
-                rspitf.send("OK")
-            else:
-                log.error(f"No such HW BPs")
-                rspitf.send(ERR_NOSUCHBP)
-
-        elif packet.startswith("z0") or packet.startswith("Z0"):
-            log.debug(f"Responding to SWBP request (z0)")
-            rspitf.send(ERR_GENERAL)
+            bpman.remove_breakpoint(addr)
+            log.debug(f"Deregistered BP at 0x{addr:05x} (0x{addr >> 1:04x} W)")
+            rspitf.send("OK")
 
         elif packet.startswith("vAttach"):
             log.debug(f"Responding to vAttach with fake SIGTRAP")
