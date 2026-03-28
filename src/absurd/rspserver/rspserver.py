@@ -11,14 +11,9 @@ log = getLogger(__name__)
 SIGTRAP = "S05"
 SIGINT = "S02"
 
-# Error codes. They're not "well-defined" according to GDB docs. wtf
-# These are purely arbitrary
-ERR_GENERAL = "E00"
-ERR_INVALIDARGS = "E01"
-ERR_ADDROUTOFRANGE = "E02"
-ERR_READONLY = "E03"
-ERR_OUTOFHWBP = "E04"
-ERR_NOSUCHBP = "E05"
+ERR_INVALIDARGS = "E.Invalid parameters"
+ERR_ADDROUTOFRANGE = "E.Address out of range"
+ERR_OUTOFHWBP = "E.Out of hardware breakpoint slots"
 
 # TODO: Memory type for the program memory should be "flash" with block size specified
 MEMORYMAP = """
