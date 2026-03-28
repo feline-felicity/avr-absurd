@@ -26,15 +26,6 @@ MEMORYMAP = """
 """.strip()
 
 
-def verify_checksum(payload: bytes, checksum: bytes) -> bool:
-    try:
-        calcdcs = sum(payload) % 256
-        recvdcs = int(checksum[:2].decode(encoding="ascii", errors="ignore"), 16)
-        return calcdcs == recvdcs
-    except ValueError:
-        return False
-
-
 def parse_addr(s: str):
     try:
         addr, length = s.split(",")
@@ -66,6 +57,7 @@ class RspInterface:
         self.escaping = False
         self.buffer = bytearray()
         self.client: socket.socket | None = None
+        self.checksum = 0
 
     def _process_byte(self, char: int) -> str | None:
         if self.client is None:
@@ -74,6 +66,7 @@ class RspInterface:
         if self.expected == "$":
             if char == ord("$"):
                 self.expected = "#"
+                self.checksum = 0
                 self.buffer.clear()
             elif char == 0x03:
                 self.client.sendall(b'+')
@@ -81,7 +74,9 @@ class RspInterface:
         elif self.expected == "#":
             if char == ord("}"):
                 self.escaping = True
+                self.checksum += char
             elif char != ord("#"):
+                self.checksum += char
                 char = char ^ 0x20 if self.escaping else char
                 self.escaping = False
                 self.buffer.append(char)
@@ -97,11 +92,17 @@ class RspInterface:
             self.buffer.append(char)
             self.expected = "$"
             payload = bytes(self.buffer[:-2])
-            checksum = bytes(self.buffer[-2:])
-            if verify_checksum(payload, checksum):
+            try:
+                stated_checksum = int(self.buffer[-2:].decode(encoding="ascii", errors="ignore"), 16)
+            except ValueError:
+                log.error("Invalid checksum format")
+                self.client.sendall(b'-')
+                return None
+            if self.checksum % 256 == stated_checksum:
                 self.client.sendall(b'+')
                 return payload.decode("ascii", errors="ignore")
             else:
+                log.error(f"Checksum mismatch: {len(payload)} bytes, actual={self.checksum % 256:02x}, stated={stated_checksum:02x}")
                 self.client.sendall(b'-')
         return None
 
