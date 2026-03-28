@@ -15,6 +15,8 @@ ERR_INVALIDARGS = "E.Invalid parameters"
 ERR_ADDROUTOFRANGE = "E.Address out of range"
 ERR_OUTOFHWBP = "E.Out of hardware breakpoint slots"
 
+INTERRUPT_PACKET = b"\x03"
+
 # TODO: Memory type for the program memory should be "flash" with block size specified
 MEMORYMAP = """
 <?xml version="1.0"?>
@@ -26,7 +28,8 @@ MEMORYMAP = """
 """.strip()
 
 
-def parse_addr(s: str):
+def parse_addr(b: bytes):
+    s = b.decode("ascii", errors="ignore")
     try:
         addr, length = s.split(",")
         addr = int(addr, 16)
@@ -36,10 +39,10 @@ def parse_addr(s: str):
         return None, 0
 
 
-def decode_hex_array(s: str) -> bytes:
+def decode_hex_array(s: bytes) -> bytes:
     try:
-        return bytes(int(s[2 * i:(2 * i + 2)], 16) for i in range(len(s) // 2))
-    except ValueError:
+        return bytes(int(s[2 * i:(2 * i + 2)].decode("ascii"), 16) for i in range(len(s) // 2))
+    except (ValueError, UnicodeDecodeError):
         return bytes()
 
 
@@ -52,14 +55,14 @@ class RspInterface:
         sv.listen()
         sv.settimeout(0.1)
         self.socket = sv
-        self.packets: List[str] = []
+        self.packets: List[bytes] = []
         self.expected: Literal["$", "#", "checksum1", "checksum2"] = "$"
         self.escaping = False
         self.buffer = bytearray()
         self.client: socket.socket | None = None
         self.checksum = 0
 
-    def _process_byte(self, char: int) -> str | None:
+    def _process_byte(self, char: int) -> bytes | None:
         if self.client is None:
             raise RuntimeError("No client connected")
 
@@ -69,8 +72,7 @@ class RspInterface:
                 self.checksum = 0
                 self.buffer.clear()
             elif char == 0x03:
-                self.client.sendall(b'+')
-                return "\x03"
+                return INTERRUPT_PACKET
         elif self.expected == "#":
             if char == ord("}"):
                 self.escaping = True
@@ -100,7 +102,7 @@ class RspInterface:
                 return None
             if self.checksum % 256 == stated_checksum:
                 self.client.sendall(b'+')
-                return payload.decode("ascii", errors="ignore")
+                return payload
             else:
                 log.error(f"Checksum mismatch: {len(payload)} bytes, actual={self.checksum % 256:02x}, stated={stated_checksum:02x}")
                 self.client.sendall(b'-')
@@ -116,7 +118,7 @@ class RspInterface:
         self.client.setblocking(True)
         self.client.settimeout(0.1)
 
-    def receive(self, timeout: float | None = None) -> str | None:
+    def receive(self, timeout: float | None = None) -> bytes | None:
         if self.client is None:
             raise RuntimeError("No client connected")
         self.client.settimeout(timeout if timeout is not None else 0.1)
@@ -169,7 +171,7 @@ class RspServer:
         try:
             while True:
                 packet = rspitf.receive()
-                if packet == "\x03":
+                if packet == INTERRUPT_PACKET:
                     log.debug(f"Interrupted by GDB, halting CPU and sending SIGINT")
                     self.dbg.halt_and_wait()
                     rspitf.send(SIGINT)
@@ -180,27 +182,27 @@ class RspServer:
             self.dbg.stop_session()
             rspitf.close()
 
-    def _handle_packet(self, packet: str, rspitf: RspInterface, bpman: BreakpointManager) -> None:
-        log.debug(f"Received Command: {packet}")
+    def _handle_packet(self, packet: bytes, rspitf: RspInterface, bpman: BreakpointManager) -> None:
+        log.debug(f"Received Command: {packet.decode('ascii', errors='replace')}")
 
-        if packet.startswith("qSupported"):
+        if packet.startswith(b"qSupported"):
             log.debug(f"Responding to qSupported")
             rspitf.send("PacketSize=1024;qXfer:memory-map:read+")
 
-        elif packet.startswith("qSymbol::"):
+        elif packet.startswith(b"qSymbol::"):
             log.debug(f"Responding to qSymbol:: with OK")
             rspitf.send("OK")
 
-        elif packet.startswith("!"):
+        elif packet.startswith(b"!"):
             log.debug(f"Acknowledging extended-remote")
             rspitf.send("OK")
 
-        elif packet.startswith("?"):
+        elif packet.startswith(b"?"):
             # we're on a baremetal 8-bitter (an excuse for hardcoding SIGTRAP)
             log.debug(f"Responding to ? with SIGTRAP")
             rspitf.send(SIGTRAP)
 
-        elif packet.startswith("s"):
+        elif packet.startswith(b"s"):
             # TODO: implement "step from..."
             # No need to commit breakpoints, but we have to inject the original instruction if we're on a SWBP
             originsn = bpman.get_original_instruction(self.dbg.get_pc() << 1)
@@ -212,7 +214,7 @@ class RspServer:
                 self.dbg.step()
             rspitf.send(SIGTRAP)
 
-        elif packet.startswith("c"):
+        elif packet.startswith(b"c"):
             # TODO: implement "continue from..."
             # Commit breakpoints before resuming CPU
             bpman.commit()
@@ -225,13 +227,13 @@ class RspServer:
                     rspitf.send(SIGTRAP)
                     return
                 p = rspitf.receive(timeout=0.001)
-                if p == "\x03":
+                if p == INTERRUPT_PACKET:
                     log.debug(f"Interrupted by GDB, halting CPU and sending SIGINT")
                     self.dbg.halt_and_wait()
                     rspitf.send(SIGINT)
                     return
 
-        elif packet.startswith("g"):
+        elif packet.startswith(b"g"):
             # General request for register file
             # 64 chars for GPRs, 2 for SREG, 4 for SP, 8 for byte PC (78 in total)
             log.debug(f"Responding to register file read request (g)")
@@ -248,7 +250,7 @@ class RspServer:
             log.debug(f"Register File: {response}")
             rspitf.send(response)
 
-        elif packet.startswith("G"):
+        elif packet.startswith(b"G"):
             # General request for register write
             # 64 chars for GPRs, 2 for SREG, 4 for SP, 8 for byte PC (78 in total)
             log.debug(f"Responding to register file write request (G)")
@@ -266,7 +268,7 @@ class RspServer:
             self.dbg.set_pc(pc)
             rspitf.send("OK")
 
-        elif packet.startswith("m"):
+        elif packet.startswith(b"m"):
             # Memory read access. Since modern AVRs map NVMs other than code flash to data space, we only support code (0x0-0x1FFFF) and data (0x800000-0x80FFFF)
             log.debug(f"Responding to memory read request (m)")
             addr, length = parse_addr(packet[1:])
@@ -290,10 +292,10 @@ class RspServer:
                 log.error(f"Address out of valid range")
                 rspitf.send(ERR_ADDROUTOFRANGE)
 
-        elif packet.startswith("M"):
+        elif packet.startswith(b"M"):
             # Memory write access. Only data (0x800000-0x80FFFF) supported.
             log.debug(f"Responding to memory write request (M)")
-            cmd = packet[1:].split(":")
+            cmd = packet[1:].split(b":")
             if len(cmd) != 2:
                 log.error(f"Could not parse command")
                 rspitf.send(ERR_INVALIDARGS)
@@ -317,9 +319,9 @@ class RspServer:
                 log.error(f"Data write failed")
                 rspitf.send(ERR_INVALIDARGS)
 
-        elif packet.startswith("Z1") or packet.startswith("Z0"):
+        elif packet.startswith(b"Z1") or packet.startswith(b"Z0"):
             # GDB can't choose between HW and SW breakpoints in a useful way, so we won't distinguish them and use our own logic to assign them.
-            cmd = packet[3:].split(",")[0]
+            cmd = packet[3:].decode("ascii", errors="ignore").split(",")[0]
             try:
                 addr = int(cmd, 16)
             except ValueError:
@@ -335,9 +337,9 @@ class RspServer:
                 log.error(f"Failed to register BP at 0x{addr:05x}")
                 rspitf.send(ERR_OUTOFHWBP)
 
-        elif packet.startswith("z1") or packet.startswith("z0"):
+        elif packet.startswith(b"z1") or packet.startswith(b"z0"):
             # Clear hardware BP
-            cmd = packet[3:].split(",")[0]
+            cmd = packet[3:].decode("ascii", errors="ignore").split(",")[0]
             try:
                 addr = int(cmd, 16)
             except ValueError:
@@ -348,14 +350,14 @@ class RspServer:
             log.debug(f"Deregistered BP at 0x{addr:05x} (0x{addr >> 1:04x} W)")
             rspitf.send("OK")
 
-        elif packet.startswith("vAttach"):
+        elif packet.startswith(b"vAttach"):
             log.debug(f"Responding to vAttach with fake SIGTRAP")
             rspitf.send(SIGTRAP)
 
-        elif packet.startswith("qXfer:memory-map:read"):
+        elif packet.startswith(b"qXfer:memory-map:read"):
             log.debug(f"qXfer:memory-map:read::")
             try:
-                offset, length = packet[23:].split(",")
+                offset, length = packet[23:].decode("ascii", errors="ignore").split(",")
                 offset = int(offset, 16)
                 length = int(length, 16)
             except (ValueError, IndexError):
@@ -367,7 +369,7 @@ class RspServer:
             else:
                 rspitf.send("m" + MEMORYMAP[offset:(offset + length)])
 
-        elif packet.startswith("qRcmd"):
+        elif packet.startswith(b"qRcmd"):
             # would be a good place to support strange things
             log.debug(f"Monitor Command: {packet}")
             cmd = decode_hex_array(packet[6:]).decode(errors="ignore")
@@ -419,53 +421,53 @@ class RspServer:
                 log.warning(f"Unrecognized monitor command: {cmd}")
                 rspitf.send("")
 
-        elif packet.startswith("k"):
+        elif packet.startswith(b"k"):
             log.debug(f"Ignoring k command...")
 
-        elif packet.startswith("vKill"):
+        elif packet.startswith(b"vKill"):
             log.debug(f"Responding to vKill with fake OK...")
             rspitf.send("OK")
             sys.exit(0)
 
-        elif packet.startswith("vRun"):
+        elif packet.startswith(b"vRun"):
             log.debug(f"Resetting MCU upon vRun request")
             self.dbg.reset()
             rspitf.send(SIGTRAP)
 
-        elif packet.startswith("vMustReplyEmpty"):
+        elif packet.startswith(b"vMustReplyEmpty"):
             log.debug(f"Responding to vMustReplyEmpty with empty packet")
             rspitf.send("")
 
-        elif packet.startswith("vCont?"):
+        elif packet.startswith(b"vCont?"):
             log.debug(f"Ignoring vCont? for now")
             # TODO: rspitf.send("vCont;s;c;r") after implementing vCont
             rspitf.send("")
 
-        elif packet.startswith("R") or packet.startswith("r"):
+        elif packet.startswith(b"R") or packet.startswith(b"r"):
             log.debug(f"Resetting MCU upon R/r request")
             self.dbg.reset()
 
-        elif packet.startswith("T") or packet.startswith("H"):
+        elif packet.startswith(b"T") or packet.startswith(b"H"):
             log.debug(f"Responding to thread-related command with fake OK...")
             rspitf.send("OK")
 
-        elif packet.startswith("qfThreadInfo"):
+        elif packet.startswith(b"qfThreadInfo"):
             log.debug(f"Responding to qfThreadInfo with fake thread list...")
             rspitf.send("m1")
 
-        elif packet.startswith("qsThreadInfo"):
+        elif packet.startswith(b"qsThreadInfo"):
             log.debug(f"Responding to qsThreadInfo with empty list...")
             rspitf.send("l")
 
-        elif packet.startswith("qC"):
+        elif packet.startswith(b"qC"):
             log.debug(f"Responding to qC with fake thread ID...")
             rspitf.send("QC1")
 
-        elif packet.startswith("qAttached"):
+        elif packet.startswith(b"qAttached"):
             log.debug(f"Responding to qAttached with 1 (attached)")
             rspitf.send("1")
 
-        elif packet.startswith("D"):
+        elif packet.startswith(b"D"):
             log.debug(f"Detaching")
             sys.exit(0)
 
