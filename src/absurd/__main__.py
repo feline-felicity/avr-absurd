@@ -8,11 +8,23 @@ from .nvmdrivers import create_nvm_driver
 from .rspserver import RspServer
 from .updi import AddressWidth, UpdiClient, UpdiException, UpdiFeatures, UpdiRev1, KEY_NVMPROG
 
+
+class MultiFilter(Filter):
+    def __init__(self, *allowed_modules: str):
+        super().__init__()
+        self.allowed_modules = allowed_modules
+
+    def filter(self, record):
+        return any(record.name.startswith(name) for name in self.allowed_modules)
+
+
 log = getLogger()
 handler = StreamHandler(sys.stderr)
 handler.setLevel(INFO)
 handler.setFormatter(Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-handler.addFilter(Filter("absurd.rspserver.rspserver"))
+handler.addFilter(MultiFilter(
+    "absurd.rspserver.rspserver",
+))
 log.setLevel(DEBUG)
 log.addHandler(handler)
 
