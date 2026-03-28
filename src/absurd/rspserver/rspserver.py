@@ -15,15 +15,16 @@ ERR_INVALIDARGS = "E.Invalid parameters"
 ERR_ADDROUTOFRANGE = "E.Address out of range"
 ERR_OUTOFHWBP = "E.Out of hardware breakpoint slots"
 
-# TODO: Memory type for the program memory should be "flash" with block size specified
-MEMORYMAP = """
-<?xml version="1.0"?>
+
+def get_memory_map_xml(page_size: int, flash_size=0x20000) -> str:
+    return f"""<?xml version="1.0"?>
 <!DOCTYPE memory-map PUBLIC "+//IDN gnu.org//DTD GDB Memory Map V1.0//EN" "http://sourceware.org/gdb/gdb-memory-map.dtd">
 <memory-map>
     <memory type="ram" start="0x800000" length="0x10000"/>
-    <memory type="rom" start="0x0" length="0x20000"/>
-</memory-map>
-""".strip()
+    <memory type="flash" start="0x0" length="{flash_size:#x}">
+        <property name="blocksize">{page_size:#x}</property>
+    </memory>
+</memory-map>"""
 
 
 def parse_addr(b: bytes):
@@ -378,10 +379,11 @@ class RspServer:
                 log.error(f"Could not parse command")
                 rspitf.send(ERR_INVALIDARGS)
                 return
-            if offset + length >= len(MEMORYMAP):
-                rspitf.send("l" + MEMORYMAP[offset:(offset + length)])
+            mapxml = get_memory_map_xml(self.nvmdriver.get_page_size())
+            if offset + length >= len(mapxml):
+                rspitf.send("l" + mapxml[offset:(offset + length)])
             else:
-                rspitf.send("m" + MEMORYMAP[offset:(offset + length)])
+                rspitf.send("m" + mapxml[offset:(offset + length)])
 
         elif packet.startswith(b"qRcmd"):
             # would be a good place to support strange things
@@ -485,6 +487,67 @@ class RspServer:
             log.debug(f"Detaching")
             sys.exit(0)
 
+        elif packet.startswith(b"vFlashErase"):
+            addr, length = parse_addr(packet[12:])
+            if addr is None:
+                log.error("Could not parse address and length in vFlashErase command")
+                rspitf.send(ERR_INVALIDARGS)
+                return
+            self._do_erase_flash(addr, length, rspitf)
+
+        elif packet.startswith(b"vFlashWrite"):
+            cmd = packet[12:].split(b":")
+            if len(cmd) != 2:
+                log.error("Could not parse vFlashWrite packet")
+                rspitf.send(ERR_INVALIDARGS)
+                return
+            try:
+                addr = int(cmd[0].decode("ascii", errors="ignore"), 16)
+            except ValueError:
+                log.error("Could not parse address in vFlashWrite command")
+                rspitf.send(ERR_INVALIDARGS)
+                return
+            self._do_write_flash(addr, cmd[1], rspitf)
+
+        elif packet.startswith(b"vFlashDone"):
+            # We don't buffer flash updates, so this is a no-op for us.
+            log.info(f"Flashing done")
+            rspitf.send("OK")
+
         else:
             log.warning(f"Unknown Command: {packet}")
             rspitf.send("")
+
+    def _do_erase_flash(self, addr: int, length: int, rspitf: RspInterface):
+        log.debug(f"Erasing flash from 0x{addr:05x} to 0x{addr + length:05x} ({length} bytes)")
+        ps = self.nvmdriver.get_page_size()
+        if addr < 0 or 0x20000 < addr + length:
+            log.error(f"Address out of range (128 KiB)")
+            rspitf.send(ERR_ADDROUTOFRANGE)
+            return
+        if addr % ps != 0 or length % ps != 0:
+            log.error(f"Unaligned erase request (page size: {ps} bytes)")
+            rspitf.send(ERR_INVALIDARGS)
+            return
+        for page_addr in range(addr, addr + length, ps):
+            log.info(f"Erasing page {page_addr // ps} at 0x{page_addr:05x}")
+            self.nvmdriver.erase_page(page_addr)
+        rspitf.send("OK")
+
+    def _do_write_flash(self, addr: int, data: bytes, rspitf: RspInterface):
+        log.debug(f"Writing to flash at 0x{addr:05x}, {len(data)} bytes")
+        ps = self.nvmdriver.get_page_size()
+        if addr < 0 or 0x20000 <= addr + len(data):
+            log.error(f"Address out of range (128 KiB)")
+            rspitf.send(ERR_ADDROUTOFRANGE)
+            return
+        if addr % ps != 0:
+            log.error(f"Unaligned write request (page size: {ps} bytes)")
+            rspitf.send(ERR_INVALIDARGS)
+            return
+        # Length not required to align with page size. NvmDriver API doesn't require padding, either.
+        for page_addr in range(addr, addr + len(data), ps):
+            pagedata = data[page_addr - addr:page_addr - addr + ps]
+            log.info(f"Programming page {page_addr // ps} at 0x{page_addr:05x} ({len(pagedata)} bytes)")
+            self.nvmdriver.program_page(page_addr, pagedata)
+        rspitf.send("OK")
