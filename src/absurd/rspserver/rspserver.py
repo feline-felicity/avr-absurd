@@ -15,8 +15,6 @@ ERR_INVALIDARGS = "E.Invalid parameters"
 ERR_ADDROUTOFRANGE = "E.Address out of range"
 ERR_OUTOFHWBP = "E.Out of hardware breakpoint slots"
 
-INTERRUPT_PACKET = b"\x03"
-
 # TODO: Memory type for the program memory should be "flash" with block size specified
 MEMORYMAP = """
 <?xml version="1.0"?>
@@ -54,80 +52,81 @@ class RspInterface:
         sv.bind(("", tcpport))
         sv.listen()
         sv.settimeout(0.1)
-        self.socket = sv
-        self.packets: List[bytes] = []
-        self.expected: Literal["$", "#", "checksum1", "checksum2"] = "$"
-        self.escaping = False
-        self.buffer = bytearray()
-        self.client: socket.socket | None = None
-        self.checksum = 0
+        self._socket = sv
+        self._packets: List[bytes] = []
+        self._expected: Literal["$", "#", "checksum1", "checksum2"] = "$"
+        self._escaping = False
+        self._buffer = bytearray()
+        self._client: socket.socket | None = None
+        self._checksum = 0
+        self._interrupted = False
 
     def _process_byte(self, char: int) -> bytes | None:
-        if self.client is None:
+        if self._client is None:
             raise RuntimeError("No client connected")
 
-        if self.expected == "$":
+        if self._expected == "$":
             if char == ord("$"):
-                self.expected = "#"
-                self.checksum = 0
-                self.buffer.clear()
+                self._expected = "#"
+                self._checksum = 0
+                self._buffer.clear()
             elif char == 0x03:
-                return INTERRUPT_PACKET
-        elif self.expected == "#":
+                self._interrupted = True
+        elif self._expected == "#":
             if char == ord("}"):
-                self.escaping = True
-                self.checksum += char
+                self._escaping = True
+                self._checksum += char
             elif char != ord("#"):
-                self.checksum += char
-                char = char ^ 0x20 if self.escaping else char
-                self.escaping = False
-                self.buffer.append(char)
-                if len(self.buffer) > self.BUFFER_SIZE:
+                self._checksum += char
+                char = char ^ 0x20 if self._escaping else char
+                self._escaping = False
+                self._buffer.append(char)
+                if len(self._buffer) > self.BUFFER_SIZE:
                     log.warning("Resetting state machine due to buffer overflow")
-                    self.expected = "$"
+                    self._expected = "$"
             else:  # char == ord("#")
-                self.expected = "checksum1"
-        elif self.expected == "checksum1":
-            self.buffer.append(char)
-            self.expected = "checksum2"
-        elif self.expected == "checksum2":
-            self.buffer.append(char)
-            self.expected = "$"
-            payload = bytes(self.buffer[:-2])
+                self._expected = "checksum1"
+        elif self._expected == "checksum1":
+            self._buffer.append(char)
+            self._expected = "checksum2"
+        elif self._expected == "checksum2":
+            self._buffer.append(char)
+            self._expected = "$"
+            payload = bytes(self._buffer[:-2])
             try:
-                stated_checksum = int(self.buffer[-2:].decode(encoding="ascii", errors="ignore"), 16)
+                stated_checksum = int(self._buffer[-2:].decode(encoding="ascii", errors="ignore"), 16)
             except ValueError:
                 log.error("Invalid checksum format")
-                self.client.sendall(b'-')
+                self._client.sendall(b'-')
                 return None
-            if self.checksum % 256 == stated_checksum:
-                self.client.sendall(b'+')
+            if self._checksum % 256 == stated_checksum:
+                self._client.sendall(b'+')
                 return payload
             else:
-                log.error(f"Checksum mismatch: {len(payload)} bytes, actual={self.checksum % 256:02x}, stated={stated_checksum:02x}")
-                self.client.sendall(b'-')
+                log.error(f"Checksum mismatch: {len(payload)} bytes, actual={self._checksum % 256:02x}, stated={stated_checksum:02x}")
+                self._client.sendall(b'-')
         return None
 
     def accept(self):
-        while not self.client:
+        while not self._client:
             try:
-                self.client, addr = self.socket.accept()
+                self._client, addr = self._socket.accept()
                 log.info(f"Accepted connection from {addr}")
             except socket.timeout:
                 pass
-        self.client.setblocking(True)
-        self.client.settimeout(0.1)
+        self._client.setblocking(True)
+        self._client.settimeout(0.1)
 
     def receive(self, timeout: float | None = None) -> bytes | None:
-        if self.client is None:
+        if self._client is None:
             raise RuntimeError("No client connected")
-        self.client.settimeout(timeout if timeout is not None else 0.1)
+        self._client.settimeout(timeout if timeout is not None else 0.1)
         while True:
-            if self.packets:
-                return self.packets.pop(0)
+            if self._packets:
+                return self._packets.pop(0)
             try:
-                data = self.client.recv(1024)
-            except socket.timeout:
+                data = self._client.recv(1024)
+            except TimeoutError:
                 if timeout is None:
                     continue
                 else:
@@ -135,24 +134,41 @@ class RspInterface:
             for char in data:
                 packet = self._process_byte(char)
                 if packet is not None:
-                    self.packets.append(packet)
+                    self._packets.append(packet)
+
+    def check_interrupt(self) -> bool:
+        if self._client is None:
+            raise RuntimeError("No client connected")
+        self._client.settimeout(0)
+        try:
+            data = self._client.recv(1024)
+            for char in data:
+                packet = self._process_byte(char)
+                if packet is not None:
+                    self._packets.append(packet)
+        except BlockingIOError:
+            pass
+        if self._interrupted:
+            self._interrupted = False
+            return True
+        return False
 
     def send(self, data: str):
-        if self.client is None:
+        if self._client is None:
             raise RuntimeError("No client connected")
         checksum = f"{sum(data.encode('ascii')) % 256:02x}"
         escaped = data.replace("}", "}\x5d").replace("#", "}\x03").replace("$", "}\x04").replace("*", "}\x0a")
         pack = f"${escaped}#{checksum}".encode("ascii")
-        self.client.sendall(pack)
+        self._client.sendall(pack)
 
     def close(self):
-        if self.client:
-            self.client.close()
-        self.socket.close()
+        if self._client:
+            self._client.close()
+        self._socket.close()
 
 
 class RspServer:
-    def __init__(self, tcpport: int, debugger: Ocd, nvmdriver: NvmDriver, allow_swbp = False) -> None:
+    def __init__(self, tcpport: int, debugger: Ocd, nvmdriver: NvmDriver, allow_swbp=False) -> None:
         self.dbg = debugger
         self.bps: List[int] = [-1, -1]
         self.tcpport = tcpport
@@ -171,12 +187,7 @@ class RspServer:
         try:
             while True:
                 packet = rspitf.receive()
-                if packet == INTERRUPT_PACKET:
-                    log.debug(f"Interrupted by GDB, halting CPU and sending SIGINT")
-                    self.dbg.halt_and_wait()
-                    rspitf.send(SIGINT)
-                else:
-                    self._handle_packet(packet, rspitf, bpman)  # type: ignore (receive() never returns None in non-timeout mode)
+                self._handle_packet(packet, rspitf, bpman)  # type: ignore (receive() never returns None in non-timeout mode)
         finally:
             bpman.cleanup()
             self.dbg.stop_session()
@@ -212,7 +223,11 @@ class RspServer:
             else:
                 log.debug(f"Stepping normally")
                 self.dbg.step()
-            rspitf.send(SIGTRAP)
+            if rspitf.check_interrupt():
+                log.debug(f"Interrupted by GDB during step, reply with SIGINT")
+                rspitf.send(SIGINT)
+            else:
+                rspitf.send(SIGTRAP)
 
         elif packet.startswith(b"c"):
             # TODO: implement "continue from..."
@@ -226,8 +241,7 @@ class RspServer:
                     log.debug(f"CPU halted, sending SIGTRAP")
                     rspitf.send(SIGTRAP)
                     return
-                p = rspitf.receive(timeout=0.001)
-                if p == INTERRUPT_PACKET:
+                if rspitf.check_interrupt():
                     log.debug(f"Interrupted by GDB, halting CPU and sending SIGINT")
                     self.dbg.halt_and_wait()
                     rspitf.send(SIGINT)
