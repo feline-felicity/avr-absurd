@@ -149,11 +149,12 @@ class RspInterface:
 
 
 class RspServer:
-    def __init__(self, tcpport: int, debugger: Ocd, nvmdriver: NvmDriver) -> None:
+    def __init__(self, tcpport: int, debugger: Ocd, nvmdriver: NvmDriver, allow_swbp = False) -> None:
         self.dbg = debugger
         self.bps: List[int] = [-1, -1]
         self.tcpport = tcpport
         self.nvmdriver = nvmdriver
+        self.allow_swbp = allow_swbp
 
     def serve(self) -> None:
         log.debug(f"Starting server; attaching to MCU and halting CPU")
@@ -162,7 +163,7 @@ class RspServer:
         rspitf = RspInterface(self.tcpport)
         rspitf.accept()
 
-        bpman = BreakpointManager(self.nvmdriver, self.dbg, allow_swbp=False)
+        bpman = BreakpointManager(self.nvmdriver, self.dbg, allow_swbp=self.allow_swbp)
 
         try:
             while True:

@@ -33,7 +33,8 @@ def main():
     parser.add_argument("-p", "--part", help="MCU name (e.g. avr16ea48)", required=True)
     parser.add_argument("-P", "--port", help="Serial port used as SerialUPDI (e.g. COM5 or /dev/ttyS1)", required=True)
     parser.add_argument("-b", "--bps", help="Baud rate for communication (defaults to 115200)", type=int, default=115200)
-    parser.add_argument("-r", "--rsp-port", help="TCP port number for RSP communcation with gdb", type=int, required=True)
+    parser.add_argument("-r", "--rsp-port", help="TCP port number for RSP communcation with gdb", type=int, default=3333)
+    parser.add_argument("-s", "--swbp", help="Enable software breakpoints (WARNING: incompatible with debuggee's IAP operations)", action="store_true")
     parser.add_argument("-v", "--verbose", help="Print more logs", action="store_true")
     # parser.add_argument("-F", "--enable-flashing", help="Enable features that require modifying NVM contents", action="store_true")
     args = parser.parse_args()
@@ -96,7 +97,7 @@ def main():
     try:
         nvm_driver = create_nvm_driver(nvmver, updic, devinfo.flash_offset)
         dbg = Ocd(updic, flash_offset=devinfo.flash_offset, use_byte_pc=(ocdver == "0"))
-        sv = RspServer(args.rsp_port, dbg, nvm_driver)
+        sv = RspServer(args.rsp_port, dbg, nvm_driver, allow_swbp=args.swbp)
         log.info(f"Selected NVM driver for SIB NVM version {nvmver}")
         log.info("Starting RSP server...")
         sv.serve()
