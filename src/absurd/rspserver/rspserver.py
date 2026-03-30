@@ -531,8 +531,8 @@ class RspServer:
             rspitf.send(ERR_INVALIDARGS)
             return
         for page_addr in range(addr, addr + length, ps):
-            log.info(f"Erasing page {page_addr // ps} at 0x{page_addr:05x}")
-            self.nvmdriver.erase_page(page_addr)
+            log.info(f"Request to erase page {page_addr // ps} at 0x{page_addr:05x} ignored")
+            # self.nvmdriver.erase_page(page_addr)
         rspitf.send("OK")
 
     def _do_write_flash(self, addr: int, data: bytes, rspitf: RspInterface):
@@ -568,11 +568,16 @@ class RspServer:
             rspitf.send(ERR_INVALIDARGS)
             return
         ps = self.nvmdriver.get_page_size()
+        # At this point, nothing has been done to the flash yet. Pre-verify each page to avoid unnecessary writes.
         for page_addr in range(self.flash_buffer_base, self.flash_buffer_base + len(self.flash_buffer), ps):
             pagedata = self.flash_buffer[page_addr - self.flash_buffer_base:page_addr - self.flash_buffer_base + ps]
-            # Length not required to align with page size. NvmDriver API doesn't require padding, either.
-            log.info(f"Programming page {page_addr // ps} at 0x{page_addr:05x} ({len(pagedata)} bytes)")
-            self.nvmdriver.program_page(page_addr, pagedata)
+            currentdata = self.nvmdriver.read_page(page_addr)
+            if pagedata == currentdata[:len(pagedata)]:
+                log.info(f"Programming page {page_addr // ps} at 0x{page_addr:05x} ({len(pagedata)} bytes) skipped")
+            else:
+                log.info(f"Programming page {page_addr // ps} at 0x{page_addr:05x} ({len(pagedata)} bytes)")
+                self.nvmdriver.erase_page(page_addr)
+                self.nvmdriver.program_page(page_addr, pagedata)
         self.flash_buffer.clear()
         self.flash_buffer_base = None
         rspitf.send("OK")
