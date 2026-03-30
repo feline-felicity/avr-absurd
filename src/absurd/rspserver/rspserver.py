@@ -46,7 +46,7 @@ def decode_hex_array(s: bytes) -> bytes:
 
 
 class RspInterface:
-    BUFFER_SIZE = 1024
+    BUFFER_SIZE = 1024 * 16 # Arbitrary empirical limit to handle vFlashWrite
 
     def __init__(self, tcpport: int):
         sv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -175,6 +175,8 @@ class RspServer:
         self.tcpport = tcpport
         self.nvmdriver = nvmdriver
         self.allow_swbp = allow_swbp
+        self.flash_buffer = bytearray()
+        self.flash_buffer_base: int | None = None
 
     def serve(self) -> None:
         log.debug(f"Starting server; attaching to MCU and halting CPU")
@@ -496,7 +498,7 @@ class RspServer:
             self._do_erase_flash(addr, length, rspitf)
 
         elif packet.startswith(b"vFlashWrite"):
-            cmd = packet[12:].split(b":")
+            cmd = packet[12:].split(b":", maxsplit=1)
             if len(cmd) != 2:
                 log.error("Could not parse vFlashWrite packet")
                 rspitf.send(ERR_INVALIDARGS)
@@ -510,9 +512,7 @@ class RspServer:
             self._do_write_flash(addr, cmd[1], rspitf)
 
         elif packet.startswith(b"vFlashDone"):
-            # We don't buffer flash updates, so this is a no-op for us.
-            log.info(f"Flashing done")
-            rspitf.send("OK")
+            self._do_commit_flash_writes(rspitf)
 
         else:
             log.warning(f"Unknown Command: {packet}")
@@ -520,6 +520,7 @@ class RspServer:
 
     def _do_erase_flash(self, addr: int, length: int, rspitf: RspInterface):
         log.debug(f"Erasing flash from 0x{addr:05x} to 0x{addr + length:05x} ({length} bytes)")
+        self.flash_buffer_base = None
         ps = self.nvmdriver.get_page_size()
         if addr < 0 or 0x20000 < addr + length:
             log.error(f"Address out of range (128 KiB)")
@@ -535,19 +536,43 @@ class RspServer:
         rspitf.send("OK")
 
     def _do_write_flash(self, addr: int, data: bytes, rspitf: RspInterface):
-        log.debug(f"Writing to flash at 0x{addr:05x}, {len(data)} bytes")
+        # GDB does NOT give aligned addresses; we'll buffer till vFlashDone for simplicity.
+        log.debug(f"Buffering flash write to 0x{addr:05x}, {len(data)} bytes")
         ps = self.nvmdriver.get_page_size()
         if addr < 0 or 0x20000 <= addr + len(data):
             log.error(f"Address out of range (128 KiB)")
             rspitf.send(ERR_ADDROUTOFRANGE)
             return
-        if addr % ps != 0:
-            log.error(f"Unaligned write request (page size: {ps} bytes)")
+        if self.flash_buffer_base is None:
+            # First write; register base and check for alignment
+            if addr % ps != 0:
+                log.error(f"Unaligned write request (page size: {ps} bytes)")
+                rspitf.send(ERR_INVALIDARGS)
+                return
+            self.flash_buffer_base = addr
+            self.flash_buffer.clear()
+        else:
+            # Check for contiguity with previous writes
+            expected_addr = self.flash_buffer_base + len(self.flash_buffer)
+            if addr != expected_addr:
+                log.error(f"Non-contiguous write request (expected address: 0x{expected_addr:05x})")
+                rspitf.send(ERR_INVALIDARGS)
+                return
+        # Buffer and return
+        self.flash_buffer.extend(data)
+        rspitf.send("OK")
+
+    def _do_commit_flash_writes(self, rspitf: RspInterface):
+        if self.flash_buffer_base is None:
+            log.error(f"vFlashDone received without any buffered data")
             rspitf.send(ERR_INVALIDARGS)
             return
-        # Length not required to align with page size. NvmDriver API doesn't require padding, either.
-        for page_addr in range(addr, addr + len(data), ps):
-            pagedata = data[page_addr - addr:page_addr - addr + ps]
+        ps = self.nvmdriver.get_page_size()
+        for page_addr in range(self.flash_buffer_base, self.flash_buffer_base + len(self.flash_buffer), ps):
+            pagedata = self.flash_buffer[page_addr - self.flash_buffer_base:page_addr - self.flash_buffer_base + ps]
+            # Length not required to align with page size. NvmDriver API doesn't require padding, either.
             log.info(f"Programming page {page_addr // ps} at 0x{page_addr:05x} ({len(pagedata)} bytes)")
             self.nvmdriver.program_page(page_addr, pagedata)
+        self.flash_buffer.clear()
+        self.flash_buffer_base = None
         rspitf.send("OK")
