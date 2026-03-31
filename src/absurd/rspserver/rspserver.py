@@ -476,6 +476,10 @@ class RspServer:
         elif packet.startswith(b"qsThreadInfo"):
             log.debug(f"Responding to qsThreadInfo with empty list...")
             rspitf.send("l")
+        
+        elif packet.startswith(b"qThreadExtraInfo"):
+            log.debug(f"Responding to qThreadExtraInfo with fake thread name...")
+            rspitf.send(b"No thread support".hex())
 
         elif packet.startswith(b"qC"):
             log.debug(f"Responding to qC with fake thread ID...")
