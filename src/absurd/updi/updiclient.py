@@ -364,7 +364,7 @@ class UpdiClient:
         burst: number of bytes/words stored in burst (must match the operand of preceding `repeat` instruction)
         """
         assert len(data) == (burst if data_width == DataWidth.BYTE else 2 * burst)
-        assert 1 <= burst <= 0xFF
+        assert 1 <= burst <= 0x100
         resolved_addr_step = self._check_pointer_step(addr_step, "st")
         succ, val = self.command(bytes((0x60 | (resolved_addr_step << 2) | data_width,)))
         if not succ:
