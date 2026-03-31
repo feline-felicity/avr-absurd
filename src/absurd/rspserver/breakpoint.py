@@ -52,6 +52,11 @@ class BreakpointManager:
         return self.original_image[pageaddr]
 
     def add_breakpoint(self, byte_address: int):
+        # In no-SWBP mode, we reject early if we can't add the breakpoint as a hardware breakpoint, be it new or revived.
+        if not self.allow_swbp and sum(1 for bp in self.breakpoints if bp.type in (BreakpointType.INCOMING, BreakpointType.HARDWARE)) >= self.MAX_HWBPS:
+            log.debug(f"Rejecting BP registration at {byte_address:#06x} due to slot exhaustion")
+            return False
+
         bp = self._find_bp_by_address(byte_address)
         if bp is not None:
             if bp.type in (BreakpointType.OUTGOING_HARDWARE, BreakpointType.OUTGOING_SOFTWARE):
@@ -59,11 +64,6 @@ class BreakpointManager:
                 bp.type = BreakpointType.HARDWARE if bp.type == BreakpointType.OUTGOING_HARDWARE else BreakpointType.SOFTWARE
                 return True
             log.warning(f"Duplicate BP registration at {byte_address:#06x} rejected")
-            return False
-        # Reject early (on Zn packet) if we can't add the breakpoint; interacts better with gdb.
-        # Note this has to be done after confirming this is actually a new breakpoint.
-        if not self.allow_swbp and len(self.breakpoints) >= self.MAX_HWBPS:
-            log.debug(f"Rejecting BP registration at {byte_address:#06x} due to slot exhaustion")
             return False
 
         b = self.debugger.read_code(byte_address, 2)
