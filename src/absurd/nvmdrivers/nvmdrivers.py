@@ -16,6 +16,10 @@ class NvmDriver(ABC):
         pass
 
     @abstractmethod
+    def read_uid(self) -> bytes:
+        pass
+
+    @abstractmethod
     def erase_page(self, byteaddr: int):
         pass
 
@@ -96,6 +100,9 @@ class NvmDriverP0(NvmDriver):
             raise ValueError("Byte address must be aligned to page size")
         return self.updi.load_burst(self._flash_addr(byteaddr), burst=ps)
 
+    def read_uid(self) -> bytes:
+        return self.updi.load_burst(self.SIGROW + 0x03, burst=10)
+
 
 class NvmDriverP3(NvmDriverP0):
     NVM = 0x1000
@@ -115,6 +122,9 @@ class NvmDriverP3(NvmDriverP0):
         sig = self.read_signature()
         self.page_size = 64 if sig[1] <= 0x95 else 128
         return self.page_size
+
+    def read_uid(self) -> bytes:
+        return self.updi.load_burst(self.SIGROW + 0x10, burst=16)
 
 
 class NvmDriverP5(NvmDriverP3):
@@ -181,6 +191,9 @@ class NvmDriverP2(NvmDriver):
     def get_page_size(self):
         # So far, all byte-granularity NVMs have been using 512 byte pages.
         return 512
+
+    def read_uid(self) -> bytes:
+        return self.updi.load_burst(self.SIGROW + 0x10, burst=16)
 
 
 class NvmDriverP4(NvmDriverP2):
