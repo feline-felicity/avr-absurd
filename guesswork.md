@@ -18,7 +18,7 @@ These features seem to be controlled by the OCD peripheral. Fortunately, its pre
 ## The Guesswork
 ### FF-bombing OCD registers
 
-With a 128DB48 programmed with a simple firmware, I tried writing 0xFFs to addresses from 0x0F80 by UPDI and examined which bits were actually set. Though only writable bits can be found this way, this turned out to be very effective this time, especially with the first eight bytes.
+With a 128DB48 programmed with simple firmware, I tried writing 0xFFs to addresses from 0x0F80 by UPDI and examined which bits were actually set. Though only writable bits can be found this way, this turned out to be very effective this time, especially with the first eight bytes.
 
 After the FF-bombardment, values at OCD+0x00 to 0x3 was `[0xFE, 0xFF, 0x01, 0x00]`, that is, bits 1 to 16 of this 4-byte wide field were present and bit 0 and bits above the 16th were not. We all know this pattern. **This is a *byte* address in the code space**. AVR instructions are 2-byte word wide, so there is never an instruction at an odd address, and the LSb of this field need not be present. AVR128DB48 has 128 KiB of flash memory, which is the largest among modern AVRs and requires 17 bits to address a byte.
 
@@ -80,6 +80,8 @@ TinyAVR 0-series and 1-series, the first two families of AVR8X, report in the SI
 - BP0/1-specific enable bits are not at OCD+0x09[0:1]. They are instead at OCD+0x00[0] and +0x04[0], i.e., the LSb of breakpoint address registers
 - BP0 and 1 also share the halt reason bit at OCD+0x0D[0], along with stepping.
 - PC is given in byte address in OCD+0x14.
+
+There also seems to be a quirk with its interaction with software breakpoints. While v1 OCD allows us to step over `break` instruction, v0 does not. Things get nastier when we move PC to the address of a software breakpoint. As described above, when we set a new PC value, the next step doesn't execute any instructions while it increments PC by one. However, if the new PC points to a `break` instruction, this "empty cycle" does not execute, and we're left with a PC value off by one. (If we have `break` on 0x70, set OCD.PC to 0x70 and step, OCD.PC stays at 0x70, which indicates PC actually points to 0x6F.) Fortunately, it seems like we can overcome these issues by injecting a `nop` instruction instead of simply stepping.
 
 ## Register Map
 ### OCD ASI Registers

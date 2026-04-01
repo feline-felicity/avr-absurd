@@ -17,7 +17,7 @@ ABSURD is licensed under the MIT License.
 > ABSURD has only been tested with a subset of the devices listed above. Given it is based on guesswork, overgeneralization is quite possible. At the time of writing, no experiments have been performed with SD, and LA remains a header-only device.
 
 ### Serial port configuration
-Transmission through a serial port is buffered by OS. Typically, the buffer is flushed when it is full or after a certain timeout. This can cause significant delay with UPDI communication, which involves back-and-forth exchange of small packets. To mitigate this issue, minimize the buffering timeout in the way specific to OS and UART adapter in use.
+Transmission through a serial port may be buffered by OS or device driver. Typically, the buffer is flushed when it is full or after a certain timeout. This can cause significant delay with UPDI communication, which involves back-and-forth exchange of small packets. To mitigate this issue, minimize the buffering timeout in the way specific to OS and UART adapter in use.
 
 Note that a "minimal" timeout like 1 ms is still much longer than a UART character or an AVR clock cycle. This limitation is inherent to the SerialUPDI approach.
 
