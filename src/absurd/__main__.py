@@ -49,32 +49,6 @@ FLASH_SIZE_LUT = {
     0x97: 128 * 1024,
 }
 
-MEGA0_SIGS = {
-    0x93: (0x26, 0x2A),
-    0x94: (0x27, 0x26),
-    0x95: (0x30, 0x31),
-    0x96: (0x50, 0x51),
-}
-
-
-def get_flash_size(sig: bytes) -> int:
-    # With AVR8Xs, flash size can be determined by the middle byte of the signature
-    # ...except for 0x96. This denotes 48 KiB for Mega 0 series (SIG3 = 0x50/0x51)
-    if sig[1] == 0x96 and sig[2] in MEGA0_SIGS[0x96]:
-        return 48 * 1024
-    return FLASH_SIZE_LUT.get(sig[1], 0x20000)  # default: 128 KiB, largest possible with 2-byte PC
-
-
-def get_flash_offset(nvmver: str, sig: bytes) -> int:
-    # Except for NVM v0 (Tinies and Mega 0), flash is mapped at 0x800000 in UPDI space.
-    if nvmver != "0":
-        return 0x800000
-    # For NVM v0, we use data space mapping for UPDI access, i.e. 0x8000
-    # ...except for Mega 0 again (0x4000).
-    if sig[1] in MEGA0_SIGS and sig[2] in MEGA0_SIGS[sig[1]]:
-        return 0x4000
-    return 0x8000
-
 
 def main():
     parser = ArgumentParser(description="AVR Basic SerialUPDI Remote Debugger")
@@ -106,6 +80,7 @@ def main():
         uc.store_csr(0x8, 0x00)
         time.sleep(0.1)
 
+        family = sib[0:7].strip()
         nvmver = sib[10]
         ocdver = sib[13]
         sibrev = sib[20:22]
@@ -114,15 +89,28 @@ def main():
         print(f"SIB: {sib}")
         print(f"NVM: v{nvmver} / OCD: v{ocdver}")
 
-        # Provisional driver for signature reading. Flash offset is irrelevant at this point.
-        nvm_driver = create_nvm_driver(nvmver, uc, flash_offset=0x800000)
+        if family == "megaAVR":
+            flash_offset = 0x4000
+        elif family == "tinyAVR":
+            flash_offset = 0x8000
+        elif family == "AVR":
+            flash_offset = 0x800000
+        else:
+            log.warning(f"SIB family name `{family}` is not recognized; assuming flash offset 0x800000")
+            flash_offset = 0x800000
+
+        # Provisional driver for signature reading.
+        nvm_driver = create_nvm_driver(nvmver, uc, flash_offset=flash_offset)
         signature = nvm_driver.read_signature()
         revid = uc.load_direct(0x0F01)  # SYSCFG.REVID has been consistently here for all AVR8Xs. So far.
         rev = f"{chr((revid >> 4) + 64)}{revid & 0x0F}" if revid & 0xF0 else chr(revid + 64)
+        if family == "megaAVR" and signature[1] == 0x96:
+            flash_size = 48 * 1024
+        else:
+            flash_size = FLASH_SIZE_LUT.get(signature[1], 0x20000)  # default: 128 KiB, largest possible with 2-byte PC
+
         print(f"Signature: {signature.hex("-").upper()} (revision {rev})")
-        flash_size = get_flash_size(signature)
         print(f"Flash size: {flash_size // 1024} KiB")
-        flash_offset = get_flash_offset(nvmver, signature)
         print(f"UPDI flash offset: {flash_offset:#06x}")
 
         uc.store_csr(0x8, 0x59)
