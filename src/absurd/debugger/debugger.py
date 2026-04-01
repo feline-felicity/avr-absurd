@@ -48,10 +48,10 @@ class Traps(IntFlag):
     INT = 0x8000
 
 class Ocd:
-    def __init__(self, updi: UpdiClient, flash_offset: int, use_byte_pc: bool) -> None:
+    def __init__(self, updi: UpdiClient, flash_offset: int, v0mode: bool) -> None:
         self.updi = updi
         self.flash_offset = flash_offset
-        self.use_byte_pc = use_byte_pc
+        self.v0mode = v0mode
     
     def attach(self):
         try:
@@ -169,19 +169,24 @@ class Ocd:
             self.updi.store_direct(OCD_BP1AT, 0)
 
     def get_pc(self):
-        if self.use_byte_pc:
+        if self.v0mode:
             return self.updi.load_direct(OCD_PC, data_width=DataWidth.WORD) // 2 - 1
         else:
             return self.updi.load_direct(OCD_PC, data_width=DataWidth.WORD) - 1
     
     def set_pc(self, pc: int):
-        if self.use_byte_pc:
-            pc *= 2
-        # not pc+1; the instruction at the newly set PC is not executed
-        # Thus, we have to set PC to pc+1-1...
-        self.updi.store_direct(OCD_PC, pc & 0xFFFF, data_width=DataWidth.WORD)
-        # ...and do one step to complete that empty cycle, possibly related to instruction fetch
-        self.step()
+        # The value written to OCD_PC is not pc+1; the instruction at the newly set PC is not executed
+        # Thus, we have to set PC to pc+1-1 and step
+        if self.v0mode:
+            self.updi.store_direct(OCD_PC, (pc * 2) & 0xFFFF, data_width=DataWidth.WORD)
+            # On v0, empty cycle does not execute if the new PC points to a `break`, leaving actual PC pointing to the previous instruction.
+            # Injecting a nop to force an empty cycle will work around this quirk. This workaround seems to be harmless to instructions other than `break`.
+            self.updi.store_direct(OCD_INSN0, 0x0000, data_width=DataWidth.WORD)
+            self.step()
+        else:
+            self.updi.store_direct(OCD_PC, pc & 0xFFFF, data_width=DataWidth.WORD)
+            # On v1, we can step over a `break` without any special tricks.
+            self.step()
 
     def get_sp(self):
         return self.updi.load_direct(OCD_SP, data_width=DataWidth.WORD)
@@ -243,6 +248,11 @@ class Ocd:
 
     def execute_instruction(self, instruction: bytes):
         assert len(instruction) in (2, 4)
+        if self.v0mode:
+            # v0 seems to execute both injected and on-flash instructions. Rewriting PC disables the latter, giving the desired effect.
+            # On v1, injection automatically masks the on-flash instruction.
+            pcval = self.updi.load_direct(OCD_PC, data_width=DataWidth.WORD)
+            self.updi.store_direct(OCD_PC, pcval, data_width=DataWidth.WORD)
         self.updi.store_direct(OCD_INSN0, instruction[0] | (instruction[1] << 8), data_width=DataWidth.WORD)
         if len(instruction) == 4:
             self.updi.store_direct(OCD_INSN1, instruction[2] | (instruction[3] << 8), data_width=DataWidth.WORD)
@@ -280,5 +290,9 @@ class Ocd:
         print(f"BP1:\t 0x{bp1>>1:04x} W (0x{bp1:05x} B)")
         print(f"TRAPEN:\t 0x{trapen:04x} ({trapstr})")
         print(f"REASON:\t 0x{cd:04x}")
-        print(f"PC:\t 0x{pc-1:04x} W (0x{(pc-1)<<1:05x} B)\nSP:\t 0x{sp:04x}\nSREG:\t {sregstr}")
+        if self.v0mode:
+            print(f"PC:\t 0x{(pc-1)>>1:04x} W (0x{pc-2:05x} B)\nSP:\t 0x{sp:04x}\nSREG:\t {sregstr}")
+        else:
+            print(f"PC:\t 0x{pc-1:04x} W (0x{(pc-1)<<1:05x} B)\nSP:\t 0x{sp:04x}\nSREG:\t {sregstr}")
+        print("   \t 00 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31")
         print(f"Rn:\t {rf}\n")
