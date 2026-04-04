@@ -24,6 +24,7 @@ handler.setLevel(INFO)
 handler.setFormatter(Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 handler.addFilter(MultiFilter(
     "absurd.rspserver.rspserver",
+    "absurd.rspserver.breakpoint",
 ))
 log.setLevel(DEBUG)
 log.addHandler(handler)

@@ -535,8 +535,7 @@ class RspServer:
             rspitf.send(ERR_INVALIDARGS)
             return
         for page_addr in range(addr, addr + length, ps):
-            log.info(f"Request to erase page {page_addr // ps} at 0x{page_addr:05x} ignored")
-            # self.nvmdriver.erase_page(page_addr)
+            log.debug(f"Request to erase page {page_addr // ps} at 0x{page_addr:05x} ignored")
         rspitf.send("OK")
 
     def _do_write_flash(self, addr: int, data: bytes, rspitf: RspInterface):
