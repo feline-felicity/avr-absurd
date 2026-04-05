@@ -90,41 +90,28 @@ class BreakpointManager:
             # No changes otherwise; makes this function idempotent.
             log.warning(f"Duplicate attempt to remove BP at {byte_address:#06x} ignored")
 
-    def _aggregate_updates(self, flash_updates: dict[int, int | None]) -> dict[int, bytearray]:
-        page_updates: dict[int, bytearray] = {}
-        for addr, new_word in flash_updates.items():
-            page_addr = self.nvmdriver.get_page_base_addr(addr)
-            if page_addr not in page_updates:
-                page_updates[page_addr] = bytearray(self._get_original_image(page_addr))
-            offset = addr - page_addr
-            if new_word is not None:
-                page_updates[page_addr][offset] = new_word & 0xFF
-                page_updates[page_addr][offset + 1] = (new_word >> 8) & 0xFF
-            # For None (restore original), just leaving the original image (as obtained from _get_original_image()) is sufficient.
-        return page_updates
-
     def commit(self):
-        """
-        Commit all changes made to breakpoints while the target is halted.
-        """
-        flash_updates: dict[int, int | None] = {}
+        # Clearer logic flow to replace commit()
+        updated_pages: dict[int, list[int]] = {}  # { page base address: [offsets of SWBPs in this page]}; all addresses in bytes
         hwbps: list[int] = []
-        # 1. Actually remove all outgoing breakpoints; for outgoing software breakpoints, register flash updates to restore the original instruction.
+        # 1. Remove outgoing breakpoints, registering empty flash updates for pages that have outgoing SWBPs
         removed_bps = []
         for bp in self.breakpoints:
             if bp.type == BreakpointType.OUTGOING_SOFTWARE:
-                flash_updates[bp.byte_address] = None
+                page_addr = self.nvmdriver.get_page_base_addr(bp.byte_address)
+                if page_addr not in updated_pages:
+                    updated_pages[page_addr] = []
                 removed_bps.append(bp)
             elif bp.type == BreakpointType.OUTGOING_HARDWARE:
-                # Just remove HWBP; no flash update needed.
                 removed_bps.append(bp)
         for bp in removed_bps:
             self.breakpoints.remove(bp)
-
         # 2. Sort incoming and hardware breakpoints by type and age; first two candidates become hardware breakpoints
-        self.breakpoints.sort(key=lambda bp: (bp.type.value, bp.age))  # Ascending. Incoming, hardware, then rest; newer before older.
+        self.breakpoints.sort(key=lambda bp: (bp.type.value, bp.age))  # Ascending. Incoming, hardware, then software; newer before older.
         for bp in self.breakpoints:
-            log.debug(f"Active BP: type={bp.type} @ {bp.byte_address:#06x} B (age={bp.age})")
+            page_addr = self.nvmdriver.get_page_base_addr(bp.byte_address)
+            offset = bp.byte_address - page_addr
+            log.debug(f"Active BP: type={bp.type} (age={bp.age}) @ {bp.byte_address:#06x} B (page {page_addr:#06x} + offset {offset:#04x})")
             bp.age += 1
             if bp.type in (BreakpointType.INCOMING, BreakpointType.HARDWARE):
                 if len(hwbps) < self.MAX_HWBPS:
@@ -133,48 +120,54 @@ class BreakpointManager:
                     bp.type = BreakpointType.HARDWARE
                 else:
                     # No more slots. These has to be converted to software BPs.
-                    flash_updates[bp.byte_address] = BREAK
+                    if page_addr not in updated_pages:
+                        updated_pages[page_addr] = []
+                    updated_pages[page_addr].append(offset)
                     bp.type = BreakpointType.SOFTWARE
-            # Existing SWBPs require no action
-
-        # 3. Perform flash updates, if allowed.
-        # By limiting BP number to MAX_HWBPS in add_breakpoint(), we should have enforced this. Extra sanity check just in case.
-        assert self.allow_swbp or not flash_updates
-        # Make a dictionary of page vs its new content
-        page_updates = self._aggregate_updates(flash_updates)
-        for page_addr, new_content in page_updates.items():
-            log.info(f"Updating page at {page_addr:#06x}")
+            elif bp.type == BreakpointType.SOFTWARE:
+                # 3. Re-register existing SWBPs if they are overwritten by changes above
+                # Note that this executes after all Incoming and Hardware BPs are processed due to sorting above.
+                if page_addr in updated_pages:
+                    updated_pages[page_addr].append(offset)
+        # add_breakpoint() should have prevented this from happening; sanity check.
+        assert self.allow_swbp or not updated_pages
+        # 4. Calculate new image for each page in updated_pages, and perform flash updates
+        for page_addr, offsets in updated_pages.items():
+            new_image = bytearray(self._get_original_image(page_addr))
+            for offset in offsets:
+                new_image[offset] = BREAK & 0xFF
+                new_image[offset + 1] = (BREAK >> 8) & 0xFF
+            log.info(f"Updating page at {page_addr:#06x} containing {len(offsets)} SWBP(s)")
             self.flash_stats[page_addr] += 1
             self.nvmdriver.erase_page(page_addr)
-            self.nvmdriver.program_page(page_addr, bytes(new_content))
-
-        # 4. Set hardware breakpoints
+            self.nvmdriver.program_page(page_addr, bytes(new_image))
+        # 5. Set hardware breakpoints
         self.debugger.clear_bp()
         for idx, bpbyteaddr in enumerate(hwbps):
             wordaddr = bpbyteaddr // 2
             self.debugger.set_bp(idx, wordaddr)
             log.debug(f"Set HWBP{idx} at byte address {bpbyteaddr:#06x} (word address {wordaddr:#04x})")
-
-        # 5. Invalidate pipeline (not sure if this is needed)
+        # 6. Invalidate pipeline (not sure if this is needed)
         self.debugger.set_pc(self.debugger.get_pc())
 
     def cleanup(self):
-        flash_updates: dict[int, int | None] = {}
+        restored_pages: list[int] = []
         for bp in self.breakpoints:
-            if bp.type in (BreakpointType.SOFTWARE, BreakpointType.OUTGOING_SOFTWARE):
-                flash_updates[bp.byte_address] = None
-        page_updates = self._aggregate_updates(flash_updates)
-        for page_addr, new_content in page_updates.items():
+            if bp.type in (BreakpointType.HARDWARE, BreakpointType.SOFTWARE):
+                page_addr = self.nvmdriver.get_page_base_addr(bp.byte_address)
+                if page_addr not in restored_pages:
+                    restored_pages.append(page_addr)
+        for page_addr in restored_pages:
             log.info(f"Restoring page at {page_addr:#06x}")
             self.flash_stats[page_addr] += 1
             self.nvmdriver.erase_page(page_addr)
-            self.nvmdriver.program_page(page_addr, bytes(new_content))
+            self.nvmdriver.program_page(page_addr, self._get_original_image(page_addr))
         self.debugger.clear_bp()
         log.debug("Cleared all hardware breakpoints")
         if self.flash_stats:
-            log.info("Flash usage report:")
+            print("Flash usage report:")
             for addr in sorted(self.flash_stats.keys()):
-                log.info(f"  Page {addr:#06x} B: {self.flash_stats[addr]} cycles")
+                print(f"  Page {addr:#06x} B: {self.flash_stats[addr]} cycles")
             self.flash_stats.clear()
 
     def get_original_instruction(self, byte_address: int) -> int | None:
