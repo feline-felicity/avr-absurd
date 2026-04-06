@@ -153,7 +153,7 @@ class BreakpointManager:
     def cleanup(self):
         restored_pages: list[int] = []
         for bp in self.breakpoints:
-            if bp.type in (BreakpointType.HARDWARE, BreakpointType.SOFTWARE):
+            if bp.type in (BreakpointType.SOFTWARE, BreakpointType.OUTGOING_SOFTWARE):
                 page_addr = self.nvmdriver.get_page_base_addr(bp.byte_address)
                 if page_addr not in restored_pages:
                     restored_pages.append(page_addr)
