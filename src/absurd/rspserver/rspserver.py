@@ -168,6 +168,47 @@ class RspInterface:
         self._socket.close()
 
 
+class FlashBuffer:
+    def __init__(self, page_size: int):
+        self.page_size = page_size
+        self.pages: dict[int, bytearray] = {}
+
+    def _get_page_buffer(self, page_addr: int) -> bytearray:
+        if page_addr not in self.pages:
+            self.pages[page_addr] = bytearray(b'\xFF' * self.page_size)
+        return self.pages[page_addr]
+
+    def add_chunk(self, addr: int, data: bytes):
+        # Handle unaligned start first
+        if addr % self.page_size != 0:
+            offset = addr % self.page_size
+            page_addr = addr - offset
+            page_buffer = self._get_page_buffer(page_addr)
+            chunk_len = min(len(data), self.page_size - offset)
+            page_buffer[offset:offset + chunk_len] = data[:chunk_len]
+            addr += chunk_len
+            data = data[chunk_len:]
+        # Start offset is now aligned; handle remaining full and partial pages
+        while data:
+            page_addr = addr
+            page_buffer = self._get_page_buffer(page_addr)
+            chunk_len = min(len(data), self.page_size)
+            page_buffer[:chunk_len] = data[:chunk_len]
+            addr += chunk_len
+            data = data[chunk_len:]
+
+    def add_chunks(self, chunks: dict[int, bytes]):
+        for addr, data in chunks.items():
+            self.add_chunk(addr, data)
+
+    def iter_pages(self):
+        for page_addr, buffer in self.pages.items():
+            yield page_addr, bytes(buffer)
+
+    def clear(self):
+        self.pages.clear()
+
+
 class RspServer:
     def __init__(self, tcpport: int, debugger: Ocd, nvmdriver: NvmDriver, allow_swbp=False) -> None:
         self.dbg = debugger
@@ -175,8 +216,7 @@ class RspServer:
         self.tcpport = tcpport
         self.nvmdriver = nvmdriver
         self.allow_swbp = allow_swbp
-        self.flash_buffer = bytearray()
-        self.flash_buffer_base: int | None = None
+        self.flash_buffer: dict[int, bytes] = {}
 
     def serve(self) -> None:
         log.debug(f"Starting server; attaching to MCU and halting CPU")
@@ -524,7 +564,7 @@ class RspServer:
 
     def _do_erase_flash(self, addr: int, length: int, rspitf: RspInterface):
         log.debug(f"Erasing flash from 0x{addr:05x} to 0x{addr + length:05x} ({length} bytes)")
-        self.flash_buffer_base = None
+        self.flash_buffer.clear()
         ps = self.nvmdriver.get_page_size()
         if addr < 0 or 0x20000 < addr + length:
             log.error(f"Address out of range (128 KiB)")
@@ -541,46 +581,29 @@ class RspServer:
     def _do_write_flash(self, addr: int, data: bytes, rspitf: RspInterface):
         # GDB does NOT give aligned addresses; we'll buffer till vFlashDone for simplicity.
         log.debug(f"Buffering flash write to 0x{addr:05x}, {len(data)} bytes")
-        ps = self.nvmdriver.get_page_size()
         if addr < 0 or 0x20000 <= addr + len(data):
             log.error(f"Address out of range (128 KiB)")
             rspitf.send(ERR_ADDROUTOFRANGE)
             return
-        if self.flash_buffer_base is None:
-            # First write; register base and check for alignment
-            if addr % ps != 0:
-                log.error(f"Unaligned write request (page size: {ps} bytes)")
-                rspitf.send(ERR_INVALIDARGS)
-                return
-            self.flash_buffer_base = addr
-            self.flash_buffer.clear()
-        else:
-            # Check for contiguity with previous writes
-            expected_addr = self.flash_buffer_base + len(self.flash_buffer)
-            if addr != expected_addr:
-                log.error(f"Non-contiguous write request (expected address: 0x{expected_addr:05x})")
-                rspitf.send(ERR_INVALIDARGS)
-                return
-        # Buffer and return
-        self.flash_buffer.extend(data)
+        # GDB can command non-contiguous writes. We'll simply buffer each request as is and combine them in vFlashDone.
+        self.flash_buffer[addr] = data
         rspitf.send("OK")
 
     def _do_commit_flash_writes(self, rspitf: RspInterface):
-        if self.flash_buffer_base is None:
-            log.error(f"vFlashDone received without any buffered data")
-            rspitf.send(ERR_INVALIDARGS)
-            return
         ps = self.nvmdriver.get_page_size()
-        # At this point, nothing has been done to the flash yet. Pre-verify each page to avoid unnecessary writes.
-        for page_addr in range(self.flash_buffer_base, self.flash_buffer_base + len(self.flash_buffer), ps):
-            pagedata = self.flash_buffer[page_addr - self.flash_buffer_base:page_addr - self.flash_buffer_base + ps]
+        fb = FlashBuffer(ps)
+        fb.add_chunks(self.flash_buffer)
+        for page_addr, buffer in fb.iter_pages():
             currentdata = self.nvmdriver.read_page(page_addr)
-            if pagedata == currentdata[:len(pagedata)]:
-                log.info(f"Programming page {page_addr // ps} at 0x{page_addr:05x} ({len(pagedata)} bytes) skipped")
+            if buffer == currentdata:
+                log.info(f"Programming page {page_addr // ps} at 0x{page_addr:05x} (up to date, skipped)")
             else:
-                log.info(f"Programming page {page_addr // ps} at 0x{page_addr:05x} ({len(pagedata)} bytes)")
-                self.nvmdriver.erase_page(page_addr)
-                self.nvmdriver.program_page(page_addr, pagedata)
+                if all(b == 0xFF for b in currentdata):
+                    log.info(f"Programming page {page_addr // ps} at 0x{page_addr:05x} (erase skipped)")
+                    self.nvmdriver.program_page(page_addr, buffer)
+                else:
+                    log.info(f"Programming page {page_addr // ps} at 0x{page_addr:05x}")
+                    self.nvmdriver.erase_page(page_addr)
+                    self.nvmdriver.program_page(page_addr, buffer)
         self.flash_buffer.clear()
-        self.flash_buffer_base = None
         rspitf.send("OK")
