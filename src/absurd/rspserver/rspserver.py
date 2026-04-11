@@ -1,6 +1,7 @@
 from ..debugger import Ocd
 from .breakpoint import BreakpointManager
 from ..nvmdrivers import NvmDriver
+from ..updi import UpdiException
 import sys
 import socket
 from typing import List, Literal
@@ -280,10 +281,19 @@ class RspServer:
             self.dbg.run()
             log.debug(f"Resumed CPU; now polling for CPU Halt or Client Interrupt")
             while True:
-                if self.dbg.is_halted():
-                    log.debug(f"CPU halted, sending SIGTRAP")
-                    rspitf.send(SIGTRAP)
-                    return
+                # Somehow this frequent polling seems to be more vulnerable to UPDI protocol errors (parity/stop bit violations reported). Just because it's done far more often?
+                # While this is likely due to suboptimal signal integrity as it depends on the hardware used, it happens sporadically even with a reasonably stable setup.
+                # We'll try to salvage the session by attempting resynchronization.
+                try:
+                    if self.dbg.is_halted():
+                        log.debug(f"CPU halted, sending SIGTRAP")
+                        rspitf.send(SIGTRAP)
+                        return
+                except UpdiException as ex:
+                    log.error(f"Attempting to recover from UPDI error during `{ex.instruction}`")
+                    r = self.dbg.updi.resynchronize()
+                    log.error(f"Recovered from UPDI error; PESIG: 0x{r:02x}")
+
                 if rspitf.check_interrupt():
                     log.debug(f"Interrupted by GDB, halting CPU and sending SIGINT")
                     self.dbg.halt_and_wait()

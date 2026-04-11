@@ -86,7 +86,7 @@ class Ocd:
         self.updi.store_csr(ASI_OCD_CTRLA, ASI_OCD_RUN)
     
     def is_halted(self):
-        return (self.updi.load_csr(ASI_OCD_STATUS) & ASI_OCD_STOPPED) or self.updi.load_direct(OCD_CAUSE) #(self.updi.load_direct(OCD_CAUSE) & 0x04)
+        return bool(self.updi.load_csr(ASI_OCD_STATUS) & ASI_OCD_STOPPED)
 
     def poll_halted(self, interval: float = 0, count: Optional[int] = None):
         while not self.is_halted():
