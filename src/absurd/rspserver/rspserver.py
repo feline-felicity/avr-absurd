@@ -5,6 +5,7 @@ from ..updi import UpdiException
 import sys
 import socket
 from typing import List, Literal
+import time
 from logging import getLogger
 log = getLogger(__name__)
 
@@ -299,6 +300,7 @@ class RspServer:
                     self.dbg.halt_and_wait()
                     rspitf.send(SIGINT)
                     return
+                time.sleep(0.005)
 
         elif packet.startswith(b"g"):
             # General request for register file
