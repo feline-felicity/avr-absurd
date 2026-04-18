@@ -22,7 +22,7 @@ Transmission through a serial port may be buffered by OS or device driver. Typic
 Note that a "minimal" timeout like 1 ms is still much longer than a UART character or an AVR clock cycle. This limitation is inherent to the SerialUPDI approach.
 
 ## Usage
-- Install ABSURD with `pip install absurd`
+- Install ABSURD with `pip install avr-absurd`
   - Alternatively, clone this repository and install with `pip install -e .` for development
 - Connect MCU to PC with a SerialUPDI programmer
 - `avr-absurd -P [serial port name]`
