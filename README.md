@@ -3,7 +3,7 @@ ABSURD is a Python-based GDB remote server that allows GDB to interact with the 
 ABSURD is licensed under the MIT License.
 
 ## Requirements
-- SerialUPDI programmer (USB-UART adapter with its TX and RX connected by a fast diode)
+- SerialUPDI programmer (USB-UART adapter with its TX and RX connected by a Schottky diode to simulate a half-duplex line)
 - AVR8X microcontroller with UPDI
   - MegaAVR 0-Series (`ATmega__0_`)
   - TinyAVR 0/1/2-Series (`ATtiny__0_`, `ATtiny__1_`, `ATtiny__2_`)
@@ -22,11 +22,11 @@ Transmission through a serial port may be buffered by OS or device driver. Typic
 Note that a "minimal" timeout like 1 ms is still much longer than a UART character or an AVR clock cycle. This limitation is inherent to the SerialUPDI approach.
 
 ## Usage
-- Clone this repository
-- Install ABSURD with `pip install -e .`
+- Install ABSURD with `pip install absurd`
+  - Alternatively, clone this repository and install with `pip install -e .` for development
 - Connect MCU to PC with a SerialUPDI programmer
 - `avr-absurd -P [serial port name]`
-  - or `python -m absurd` instead of `avr-absurd` if you didn't install ABSURD
+  - or `python -m absurd` instead of `avr-absurd` if it is not in PATH
 - Run `avr-gdb` and connect to the server with `target extended-remote :[TCP port number]`
 - Optional parameters
   - `-b`/`--bps` baud rate (default: 115200). This can be higher (up to 1.8 MHz) with good SerialUPDI adapters.

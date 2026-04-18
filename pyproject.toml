@@ -1,28 +1,35 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling >= 1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "avr-absurd"
-version = "1.0.0"
+version = "1.0.1"
 authors = [
-  { name="feline-felicity" },
+    { name="feline-felicity" },
 ]
-description = "GDB RSP server for AVR MCUs connected by SerialUPDI"
+description = "SerialUPDI-based GDB RSP server for AVR8X microcontrollers"
 readme = "README.md"
 requires-python = ">=3.11"
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Topic :: Software Development :: Embedded Systems",
     "Topic :: Software Development :: Debuggers",
 ]
 dependencies = [
-  "pyserial",
+    "pyserial",
 ]
-license = {file = "LICENSE"}
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = ["avr", "debugger", "ocd", "serialupdi"]
 
 [project.scripts]
@@ -31,6 +38,11 @@ avr-absurd = "absurd.__main__:main"
 [project.urls]
 Homepage = "https://github.com/feline-felicity/avr-absurd"
 Issues = "https://github.com/feline-felicity/avr-absurd/issues"
+
+[tool.hatch.build]
+exclude = [
+    ".vscode",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/absurd"]
