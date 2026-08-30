@@ -52,6 +52,7 @@ class RspInterface:
 
     def __init__(self, tcpport: int):
         sv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sv.bind(("", tcpport))
         sv.listen()
         sv.settimeout(0.1)
